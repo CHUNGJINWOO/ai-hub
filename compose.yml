@@ -40,9 +40,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      HF_HOME: /root/.cache/huggingface
 
     ports:
       - "127.0.0.1:8000:8000"
+
+    volumes:
+      - /mnt/data/ai-hub/huggingface-cache:/root/.cache/huggingface
 
     networks:
       - ai-hub-net
