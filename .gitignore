@@ -10,3 +10,6 @@ backups/
 .vscode/
 .idea/
 .DS_Store
+
+# Temporary refactor backups
+api/app/*.before-*
