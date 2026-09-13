@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+
+postgres/
+documents/
+backups/
+
+.vscode/
+.idea/
+.DS_Store
