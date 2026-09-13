@@ -13,3 +13,6 @@ backups/
 
 # Temporary refactor backups
 api/app/*.before-*
+
+# Uploaded source documents
+huggingface-cache/

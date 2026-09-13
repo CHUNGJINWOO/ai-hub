@@ -1,8 +1,12 @@
-from fastapi import APIRouter, HTTPException
+import hashlib
+from pathlib import Path
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from pgvector import Vector
 
 from app.core.db import get_db_connection
+from app.core.document_ingest import chunk_pages, extract_text
 from app.core.embedding import model
 
 
@@ -223,6 +227,178 @@ def list_documents(project_id: int | None = None):
 # -------------------------
 # Document semantic search
 # -------------------------
+
+@router.post("/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    project_id: int | None = None,
+    title: str | None = Form(default=None),
+):
+    try:
+        if not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="Filename is required",
+            )
+
+        suffix = Path(file.filename).suffix.lower()
+
+        allowed_suffixes = {".pdf", ".txt", ".md", ".markdown"}
+
+        if suffix not in allowed_suffixes:
+            raise HTTPException(
+                status_code=400,
+                detail="Supported file types: PDF, TXT, Markdown",
+            )
+
+        with get_db_connection() as conn:
+            if project_id is not None:
+                project = conn.execute(
+                    """
+                    SELECT id
+                    FROM projects
+                    WHERE id = %s;
+                    """,
+                    (project_id,),
+                ).fetchone()
+
+                if project is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Project not found",
+                    )
+
+        upload_root = Path("/data/documents")
+        upload_root.mkdir(parents=True, exist_ok=True)
+
+        safe_name = Path(file.filename).name
+        raw_bytes = await file.read()
+
+        if not raw_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is empty",
+            )
+
+        sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+        target_name = f"{sha256}_{safe_name}"
+        target_path = upload_root / target_name
+
+        target_path.write_bytes(raw_bytes)
+
+        try:
+            pages = extract_text(
+                target_path,
+                file.content_type,
+            )
+        except ValueError as e:
+            target_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail=str(e),
+            )
+
+        chunks = chunk_pages(pages)
+
+        if not chunks:
+            target_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail="No extractable text found in the document",
+            )
+
+        embeddings = []
+
+        for _, _, content in chunks:
+            embedding = Vector(
+                model.encode(
+                    "passage: " + content,
+                    normalize_embeddings=True,
+                ).tolist()
+            )
+            embeddings.append(embedding)
+
+        document_title = title or Path(file.filename).stem
+
+        with get_db_connection() as conn:
+            document_row = conn.execute(
+                """
+                INSERT INTO documents (
+                    project_id,
+                    title,
+                    filename,
+                    mime_type,
+                    source,
+                    description,
+                    status,
+                    file_path,
+                    file_size,
+                    sha256
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    project_id,
+                    document_title,
+                    safe_name,
+                    file.content_type,
+                    "upload",
+                    None,
+                    str(target_path),
+                    len(raw_bytes),
+                    sha256,
+                ),
+            ).fetchone()
+
+            document_id = document_row[0]
+
+            for (chunk_index, page_number, content), embedding in zip(
+                chunks,
+                embeddings,
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO document_chunks (
+                        document_id,
+                        chunk_index,
+                        content,
+                        page_number,
+                        embedding
+                    )
+                    VALUES (%s, %s, %s, %s, %s);
+                    """,
+                    (
+                        document_id,
+                        chunk_index,
+                        content,
+                        page_number,
+                        embedding,
+                    ),
+                )
+
+            conn.commit()
+
+        return {
+            "status": "created",
+            "document_id": document_id,
+            "project_id": project_id,
+            "filename": safe_name,
+            "file_size": len(raw_bytes),
+            "sha256": sha256,
+            "chunk_count": len(chunks),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
 
 @router.get("/search")
 def search_documents(

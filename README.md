@@ -164,3 +164,155 @@ rows = conn.execute(
 인프라 재사용 설계	새 클라우드 계정을 만드는 대신, 기존 서버에 역할을 안전하게 추가하는 멀티 테넌트적 사고 (Docker 내부망 분리로 기존 워크로드와 충돌 없이 공존)
 보안을 설계 단계에 반영	이전 프로젝트(code-server)에서 겪은 사고를 교훈 삼아, 이번엔 "포트를 열고 나중에 막기"가 아니라 처음부터 노출 최소화 구조로 설계
 모델 선택 기준 수립	무조건 최신/고성능 모델을 고르지 않고, 실제 서버 스펙(2코어/12GB, ARM64)과 언어 요구사항(한국어 포함)을 기준으로 실용적인 선택
+
+
+## 8. Documents / RAG — 파일 업로드 및 자동 Chunk/Embedding 파이프라인
+
+### 8.1 왜 필요했는가
+
+지금까지의 Memory API는 사람이 문장을 직접 타이핑해서 `POST /memories`로 넣는 구조였다.
+이건 "짧은 사실이나 결정사항"을 기록하기엔 좋지만, 실제로 쌓여있는 지식(강의 PDF,
+매뉴얼, 프로젝트 문서)을 그대로 검색 가능하게 만들 수는 없었다. Documents/RAG는
+**원본 파일을 업로드하면 자동으로 검색 가능한 지식으로 변환**하는 파이프라인이다.
+
+```
+파일 업로드 (PDF/TXT/Markdown)
+        ↓
+   텍스트 추출
+        ↓
+   Chunk 분할 (1200자 단위, 200자 오버랩)
+        ↓
+   각 chunk를 multilingual-e5-small로 임베딩
+        ↓
+   PostgreSQL(documents, document_chunks) + pgvector 저장
+        ↓
+   /documents/search, /context/search로 의미 기반 검색
+```
+
+### 8.2 DB 스키마
+
+```sql
+CREATE TABLE documents (
+    id BIGSERIAL PRIMARY KEY,
+    project_id BIGINT REFERENCES projects(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    filename TEXT,
+    mime_type TEXT,
+    source TEXT,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    file_path TEXT,
+    file_size BIGINT,
+    sha256 TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE document_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    page_number INTEGER,
+    embedding VECTOR(384),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (document_id, chunk_index)
+);
+```
+
+**설계 포인트**:
+- `document_chunks.document_id`에 `ON DELETE CASCADE` — 문서를 지우면 그 안의 chunk도
+  자동으로 같이 삭제된다. (`memories.project_id`가 `SET NULL`이었던 것과 대조적으로,
+  여기서는 chunk가 문서 없이 홀로 존재할 이유가 없기 때문에 CASCADE가 맞는 선택이다.)
+- `sha256` 컬럼과 그 인덱스는 8.4에서 설명하는 중복 업로드 방지용이다.
+
+### 8.3 텍스트 추출 및 Chunk 분할 (`core/document_ingest.py`)
+
+```python
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
+
+def chunk_text(text: str) -> list[str]:
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + CHUNK_SIZE, len(text))
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        start = max(0, end - CHUNK_OVERLAP)
+    return chunks
+```
+
+**왜 오버랩(`CHUNK_OVERLAP=200`)을 두는가**: chunk를 겹치지 않게 딱 잘라버리면, 문장이
+chunk 경계에서 반으로 잘려 앞뒤 맥락이 끊길 수 있다. 200자를 겹치게 하면 경계 부근의
+내용이 두 chunk 모두에 포함돼, 검색 시 맥락이 끊긴 chunk만 걸리는 상황을 줄여준다.
+
+파일 형식에 따라 추출 방식을 분기한다:
+```python
+def extract_text(path: Path, mime_type: str | None) -> list[tuple[int | None, str]]:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf" or mime_type == "application/pdf":
+        return extract_text_from_pdf(path)   # 페이지 번호 보존
+    if suffix in {".txt", ".md", ".markdown"}:
+        return extract_text_from_plain_file(path)  # 페이지 개념 없음 → None
+    raise ValueError("Unsupported document type...")
+```
+PDF는 페이지 단위로 텍스트를 뽑아 `page_number`를 함께 보존하지만(`pypdf`의
+`reader.pages` 순회), TXT/Markdown은 페이지 개념이 없어 `None`으로 남긴다. 이렇게 하면
+나중에 검색 결과에 "몇 페이지에서 찾았는지"를 PDF에 한해 보여줄 수 있다.
+
+### 8.4 업로드 API — SHA-256 기반 저장
+
+```python
+raw_bytes = await file.read()
+sha256 = hashlib.sha256(raw_bytes).hexdigest()
+target_name = f"{sha256}_{safe_name}"
+target_path = upload_root / target_name
+target_path.write_bytes(raw_bytes)
+```
+
+파일을 원본 이름 그대로 저장하지 않고, **내용의 SHA-256 해시를 파일명 앞에 붙여서**
+저장한다. 두 가지 이점이 있다:
+1. 같은 이름의 파일을 여러 번 올려도 내용이 다르면 파일명이 겹치지 않는다.
+2. 나중에 "이 파일이 이미 업로드된 적 있는지"를 해시값으로 빠르게 조회할 수 있다
+   (`idx_documents_sha256` 인덱스가 이를 위한 준비).
+
+### 8.5 트러블슈팅
+
+**`/documents/search`가 `/documents/{document_id}`에 가로채짐 (재발)**
+Memory API에서 겪었던 것과 정확히 같은 원인의 문제가 Document Router에도 다시 발생했다.
+`/documents/search`를 고정 경로 취급하지 않고 `document_id`로 파싱하려다 실패. 해결도
+동일 — `/documents/search`를 `/documents/{document_id}`보다 먼저 선언. **이 패턴이
+Memory에 이어 두 번째로 반복됐다는 점에서, 새 하위 리소스(`{id}`)를 추가할 때마다
+"고정 경로가 위에 있는지" 체크리스트로 만들어 둘 필요가 있다.**
+
+**Router 경로 이중 접두사 버그**: `APIRouter(prefix="/memories")`로 이미 prefix를
+지정해놓고 각 엔드포인트 데코레이터에 또 `@router.get("/memories")`처럼 전체 경로를
+써서, 실제 경로가 `/memories/memories`가 되어버린 문제. Router를 여러 개로 쪼개는
+리팩터링 과정에서 기존 `@app.get("/memories")` 스타일 경로를 그대로 옮기다 생긴
+실수였다. `prefix`를 쓰는 라우터의 엔드포인트는 prefix를 뺀 나머지 경로만 적어야
+한다는 점을 이후 모든 라우터 분리에 동일하게 적용해 재발을 막았다.
+
+**업로드 폼 필드가 반영되지 않는 문제 (title)**: FastAPI에서 `UploadFile`과 일반
+스칼라 매개변수를 같은 함수에서 받을 때, 스칼라 매개변수를 `Form(...)`으로 명시하지
+않으면 멀티파트 폼 필드가 아니라 **쿼리 파라미터**로 취급된다. `-F "title=..."`로
+보낸 값이 무시되고 파일명에서 자동 생성한 제목으로 대체된 원인이 이것이었다.
+
+### 8.6 현재까지 검증된 것
+
+- TXT/Markdown 업로드 → chunk 생성 → embedding → `/context/search`에서 Memory와
+  Document가 함께 검색되는 것까지 실제 데이터로 확인
+- Hugging Face 모델 캐시를 Docker volume(`huggingface-cache/`)에 영속화해, 컨테이너를
+  재생성할 때마다 471MB 모델을 다시 받지 않도록 개선
+- main.py를 `core/`(DB, 임베딩 공통 로직)와 `routers/`(projects, memories, documents)로
+  분리해 단일 파일이 1000줄 넘게 비대해지는 것을 방지
+
+### 8.7 다음 단계 (TODO)
+
+- [v] 실제 다페이지 PDF로 `page_number` 보존 및 다중 chunk 생성 검증
+- [v] 업로드 `title` 폼 필드 반영 여부 재확인 (`Form()` 어노테이션 적용)
+- [v] `context.py`, `documents.py` 라우터까지 분리 완료 여부 정리
+- [v] MCP 서버 — ChatGPT/Claude/Gemini가 `/context/search`를 도구로 호출하게 연결

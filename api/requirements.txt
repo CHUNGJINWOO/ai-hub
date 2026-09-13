@@ -4,3 +4,5 @@ psycopg[binary]
 python-dotenv
 sentence-transformers
 pgvector
+python-multipart
+pypdf

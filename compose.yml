@@ -47,6 +47,7 @@ services:
 
     volumes:
       - /mnt/data/ai-hub/huggingface-cache:/root/.cache/huggingface
+      - /mnt/data/ai-hub/documents:/data/documents
 
     networks:
       - ai-hub-net
