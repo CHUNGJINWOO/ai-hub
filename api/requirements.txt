@@ -6,3 +6,7 @@ sentence-transformers
 pgvector
 python-multipart
 pypdf
+
+python-docx
+openpyxl
+python-pptx

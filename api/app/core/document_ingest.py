@@ -2,6 +2,12 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+from app.core.document_parsers import (
+    extract_text_from_docx,
+    extract_text_from_pptx,
+    extract_text_from_xlsx,
+)
+
 
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 200
@@ -62,7 +68,32 @@ def extract_text(path: Path, mime_type: str | None) -> list[tuple[int | None, st
     if suffix == ".pdf" or mime_type == "application/pdf":
         return extract_text_from_pdf(path)
 
-    if suffix in {".txt", ".md", ".markdown"}:
+    if suffix == ".docx":
+        return extract_text_from_docx(path)
+
+    if suffix == ".xlsx":
+        return extract_text_from_xlsx(path)
+
+    if suffix == ".pptx":
+        return extract_text_from_pptx(path)
+
+    if suffix in {
+        ".txt",
+        ".md",
+        ".markdown",
+        ".py",
+        ".cpp",
+        ".cc",
+        ".c",
+        ".h",
+        ".hpp",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".xacro",
+        ".rviz",
+    }:
         return extract_text_from_plain_file(path)
 
     raise ValueError(

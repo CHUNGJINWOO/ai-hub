@@ -243,12 +243,16 @@ async def upload_document(
 
         suffix = Path(file.filename).suffix.lower()
 
-        allowed_suffixes = {".pdf", ".txt", ".md", ".markdown"}
+        allowed_suffixes = {".pdf", ".txt", ".md", ".markdown", ".py", ".cpp", ".cc", ".c", ".h", ".hpp", ".xml", ".yaml", ".yml", ".json", ".xacro", ".rviz", ".docx", ".xlsx", ".pptx"}
 
         if suffix not in allowed_suffixes:
             raise HTTPException(
                 status_code=400,
-                detail="Supported file types: PDF, TXT, Markdown",
+                detail=(
+                    "Supported file types: PDF, TXT, Markdown, Python, "
+                    "C/C++, headers, XML, YAML, JSON, Xacro, RViz, "
+                    "DOCX, XLSX, PPTX"
+                ),
             )
 
         with get_db_connection() as conn:
@@ -334,9 +338,15 @@ async def upload_document(
                     status,
                     file_path,
                     file_size,
-                    sha256
+                    sha256,
+                    document_type,
+                    relative_path,
+                    file_hash
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s, %s)
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, 'active',
+                    %s, %s, %s, %s, %s, %s
+                )
                 RETURNING id;
                 """,
                 (
@@ -348,6 +358,9 @@ async def upload_document(
                     None,
                     str(target_path),
                     len(raw_bytes),
+                    sha256,
+                    suffix.lstrip("."),
+                    safe_name,
                     sha256,
                 ),
             ).fetchone()
@@ -414,6 +427,7 @@ def search_documents(
             )
 
         limit = max(1, min(limit, 20))
+        candidate_limit = min(max(limit * 5, 20), 100)
 
         query_embedding = Vector(
             model.encode(
@@ -432,6 +446,9 @@ def search_documents(
                         d.project_id,
                         d.title,
                         d.filename,
+                        d.source,
+                        d.document_type,
+                        d.relative_path,
                         c.chunk_index,
                         c.page_number,
                         c.content,
@@ -448,7 +465,7 @@ def search_documents(
                         query_embedding,
                         project_id,
                         query_embedding,
-                        limit,
+                        candidate_limit,
                     ),
                 ).fetchall()
             else:
@@ -460,6 +477,9 @@ def search_documents(
                         d.project_id,
                         d.title,
                         d.filename,
+                        d.source,
+                        d.document_type,
+                        d.relative_path,
                         c.chunk_index,
                         c.page_number,
                         c.content,
@@ -474,26 +494,168 @@ def search_documents(
                     (
                         query_embedding,
                         query_embedding,
-                        limit,
+                        candidate_limit,
                     ),
                 ).fetchall()
+
+        query_lower = q.lower()
+
+        code_intent_words = {
+            "코드",
+            "구현",
+            "함수",
+            "클래스",
+            "파일",
+            "소스",
+            "노드",
+            "콜백",
+            "토픽",
+            "퍼블리셔",
+            "서브스크라이버",
+            "launch",
+            "topic",
+            "publisher",
+            "subscriber",
+            "callback",
+            "function",
+            "class",
+            "source",
+            "driver",
+            "serial",
+            "cmd_vel",
+            "xacro",
+            "cpp",
+            "python",
+        }
+
+        documentation_words = {
+            "설명",
+            "개요",
+            "문서",
+            "README",
+            "overview",
+            "documentation",
+        }
+
+        code_intent = any(
+            word in query_lower
+            for word in code_intent_words
+        )
+
+        documentation_intent = any(
+            word in query_lower
+            for word in documentation_words
+        )
+
+        code_extensions = {
+            ".py",
+            ".cpp",
+            ".cc",
+            ".c",
+            ".h",
+            ".hpp",
+            ".xml",
+            ".xacro",
+            ".yaml",
+            ".yml",
+            ".rviz",
+            ".docx",
+            ".xlsx",
+            ".pptx",
+        }
+
+        reranked = []
+
+        for row in rows:
+            (
+                chunk_id,
+                document_id,
+                row_project_id,
+                title,
+                filename,
+                source,
+                document_type,
+                relative_path,
+                chunk_index,
+                page_number,
+                content,
+                distance,
+            ) = row
+
+            filename_lower = (filename or "").lower()
+            title_lower = (title or "").lower()
+            content_lower = (content or "").lower()
+
+            keyword_score = 0.0
+
+            query_tokens = [
+                token.strip(".,!?()[]{}:/")
+                for token in query_lower.split()
+            ]
+
+            for token in query_tokens:
+                if len(token) < 2:
+                    continue
+
+                if token in filename_lower:
+                    keyword_score += 0.30
+
+                if token in title_lower:
+                    keyword_score += 0.20
+
+                if token in content_lower:
+                    keyword_score += 0.05
+
+            extension = ""
+            if "." in filename_lower:
+                extension = "." + filename_lower.rsplit(".", 1)[1]
+
+            file_type_boost = 0.0
+
+            if code_intent and extension in code_extensions:
+                file_type_boost += 0.25
+
+            if code_intent and filename_lower.startswith("readme"):
+                file_type_boost -= 0.25
+
+            if documentation_intent and filename_lower.startswith("readme"):
+                file_type_boost += 0.20
+
+            final_score = (
+                float(distance)
+                - keyword_score
+                - file_type_boost
+            )
+
+            reranked.append(
+                (
+                    final_score,
+                    {
+                        "chunk_id": chunk_id,
+                        "document_id": document_id,
+                        "project_id": row_project_id,
+                        "title": title,
+                        "filename": filename,
+                        "source": source,
+                        "document_type": document_type,
+                        "relative_path": relative_path,
+                        "chunk_index": chunk_index,
+                        "page_number": page_number,
+                        "content": content,
+                        "distance": distance,
+                        "hybrid_score": final_score,
+                    },
+                )
+            )
+
+        reranked.sort(key=lambda item: item[0])
 
         return {
             "query": q,
             "project_id": project_id,
             "results": [
-                {
-                    "chunk_id": row[0],
-                    "document_id": row[1],
-                    "project_id": row[2],
-                    "title": row[3],
-                    "filename": row[4],
-                    "chunk_index": row[5],
-                    "page_number": row[6],
-                    "content": row[7],
-                    "distance": row[8],
-                }
-                for row in rows
+                item[1]
+                for item in reranked[:limit]
             ],
         }
 
@@ -502,6 +664,7 @@ def search_documents(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/{document_id}")
 def get_document(document_id: int):
