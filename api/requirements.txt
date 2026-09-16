@@ -10,3 +10,5 @@ pypdf
 python-docx
 openpyxl
 python-pptx
+
+mcp[cli]
