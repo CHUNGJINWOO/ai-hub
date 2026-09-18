@@ -412,8 +412,10 @@ FastAPI → 127.0.0.1:8000
 [ ] 변경 파일 선택적 재임베딩
 [ ] OCR
 [ ] HWP / HWPX
-[ ] MCP
-[ ] 외부 API 인증
+[x] MCP Streamable HTTP
+[x] MCP API key authentication
+[x] 외부 MCP endpoint 검증
+[ ] 표준 OAuth 기반 외부 AI 인증 안정화
 [ ] Web UI
 17. Git
 
@@ -451,3 +453,278 @@ SHA-256 기반 파일 식별
 Docker 기반 ARM64 서버 운영
 보안을 고려한 서비스 분리
 실제 자료를 이용한 RAG 검색 검증
+
+19. MCP 구축 / 인증 / 운영 기록
+
+AI-Hub의 검색 기능을 외부 AI 클라이언트에서 사용할 수 있도록
+Model Context Protocol(MCP) 서버를 구축했다.
+
+MCP 서버:
+
+api/app/mcp_server.py
+
+전송 방식:
+
+Streamable HTTP
+
+Endpoint:
+
+https://ros2-server.tail49948f.ts.net:10000/mcp
+
+현재 MCP tool:
+
+health_check
+search_context
+
+search_context는 기존 hybrid search를 그대로 재사용한다.
+
+Memory
++
+Document
++
+pgvector semantic search
++
+keyword / filename / title
++
+code-aware reranking
+
+구조이므로 MCP 전용 검색 로직을 별도로 만들지 않았다.
+
+20. MCP 인증 구현
+
+초기에는 Keycloak OAuth를 이용한 표준 MCP 인증을 구현했다.
+
+Keycloak:
+
+26.7.4
+
+Realm:
+
+ai-hub
+
+Scope:
+
+aihub:read
+
+JWT 검증:
+
+RS256
+issuer
+audience
+exp
+iat
+iss
+sub
+scope
+
+Claude Custom Connector의 실제 연결 과정에서는 ofid_* 오류가
+발생했고, 해당 연결 시점에 MCP와 Keycloak 로그에 요청이 생성되지
+않는 현상을 확인했다.
+
+반면 curl과 MCP Inspector에서는 동일 MCP endpoint가 정상적으로
+인증되고 tool call까지 수행되었다.
+
+따라서 MCP 서버 자체의 인증/네트워크/Streamable HTTP 구현은
+독립적으로 검증되었다.
+
+현재 개인용 개발 환경에서는 MCP_ACCESS_TOKEN을 API key로 사용하는
+fallback 인증 경로를 유지한다.
+
+21. Query API key → Bearer 변환
+
+Claude와 같은 클라이언트에서 직접 Authorization header를 지정하기
+어려운 경우를 위해 다음 구조를 구현했다.
+
+URL:
+
+/mcp?key=<API_KEY>
+
+↓
+
+QueryKeyToBearerMiddleware
+
+↓
+
+Authorization: Bearer <API_KEY>
+
+↓
+
+TokenVerifier
+
+TokenVerifier에서는:
+
+1. API key가 정확히 일치하면 허용
+2. 일치하지 않으면 기존 Keycloak JWT 검증 수행
+
+하도록 구현했다.
+
+Streamable HTTP의 streaming 동작을 보존하기 위해
+Starlette BaseHTTPMiddleware가 아니라 순수 ASGI middleware를 사용했다.
+
+API key는 URL에 포함될 수 있으므로:
+
+- URL history
+- proxy log
+- access log
+
+등에 노출될 가능성이 있다.
+
+따라서 현재 방식은 개인용 fallback으로만 사용하며,
+키가 노출된 경우 MCP_ACCESS_TOKEN을 즉시 교체한다.
+
+22. MCP 외부 검증
+
+인증 없는 외부 initialize 요청:
+
+HTTP 401 Unauthorized
+
+정상 API key:
+
+HTTP 200
+Content-Type: text/event-stream
+Mcp-Session-Id 발급
+
+MCP Inspector를 이용한 외부 tools/list:
+
+health_check
+search_context
+
+정상 확인.
+
+실제 tools/call:
+
+query:
+/cmd_vel을 받는 코드는 어디에 있는가?
+
+project_id:
+2
+
+정상 검색 결과:
+
+scripts/remote_teleop_node.py
+src/limo_ros2/limo_description/launch/gazebo_models_diff.launch.py
+src/limo_ros2/limo_base/src/limo_driver.cpp
+
+즉:
+
+External HTTPS
+→ Tailscale Funnel
+→ MCP authentication
+→ Streamable HTTP
+→ MCP tool call
+→ Hybrid Search
+→ PostgreSQL + pgvector
+→ LIMO documents
+
+전체 경로를 실제 데이터로 검증했다.
+
+23. Docker 저장소 이전
+
+MCP 이미지 build 과정에서:
+
+no space left on device
+
+오류가 발생했다.
+
+원인은 Docker/containerd가 45GB root disk를 사용하고 있었기 때문이다.
+
+기존:
+
+/var/lib/docker
+/var/lib/containerd
+
+변경:
+
+/mnt/data/docker
+/mnt/data/containerd
+
+Docker:
+
+/etc/docker/daemon.json
+
+containerd:
+
+/etc/containerd/config.toml
+
+으로 저장 위치를 변경했다.
+
+이후 root disk:
+
+약 90%
+→
+약 35%
+
+로 감소했고, MCP image build가 정상적으로 완료되었다.
+
+현재 대용량 Docker/containerd 데이터는 /mnt/data를 사용한다.
+
+24. Claude Custom Connector
+
+Claude Custom Connector에서는:
+
+ofid_63b43f2049c8d003
+
+오류가 발생했다.
+
+연결 직후 MCP/Keycloak server log에 요청이 생성되지 않는 것을
+확인했다.
+
+반면:
+
+curl
+MCP Inspector
+
+에서는 같은 외부 MCP endpoint가 정상적으로 동작했다.
+
+따라서 현재 Claude 연결 문제와 AI-Hub MCP 서버 구현 문제를
+분리하여 관리한다.
+
+Claude 연결이 정상화되기 전까지 서버 쪽 코드를 임의로 변경하지
+않는 것을 원칙으로 한다.
+
+25. 현재 안정 상태
+
+AI-Hub API
+정상
+
+PostgreSQL + pgvector
+정상
+
+Hybrid Search
+정상
+
+MCP Streamable HTTP
+정상
+
+Bearer authentication
+정상
+
+MCP Inspector
+정상
+
+search_context
+정상
+
+LIMO project search
+정상
+
+Claude Custom Connector
+연결 pending
+
+26. 향후 개발
+
+우선순위:
+
+Search → LLM RAG Answer
+검색 결과 출처 표시
+Memory + Document 통합 Context
+Conversation Context
+MCP tool 확장
+structuredContent 개선
+중복 업로드 자동 방지
+변경 파일 선택적 재임베딩
+OCR
+HWP / HWPX
+Web UI
+
+Claude Custom Connector OAuth는 별도 트랙으로 유지한다.

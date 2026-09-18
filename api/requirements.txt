@@ -12,3 +12,5 @@ openpyxl
 python-pptx
 
 mcp[cli]
+
+PyJWT[crypto]

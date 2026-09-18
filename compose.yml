@@ -70,6 +70,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       HF_HOME: /root/.cache/huggingface
+      MCP_ACCESS_TOKEN: ${MCP_ACCESS_TOKEN}
+      MCP_RESOURCE_URL: https://ros2-server.tail49948f.ts.net:10000/mcp
+      KEYCLOAK_ISSUER: https://ros2-server.tail49948f.ts.net:8443/realms/ai-hub
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/ai-hub/protocol/openid-connect/certs
 
     ports:
       - "127.0.0.1:8001:8001"
@@ -87,6 +91,39 @@ services:
         "--port",
         "8001"
       ]
+
+    networks:
+      - ai-hub-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.4
+    container_name: ai-hub-keycloak
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/aihub
+      KC_DB_SCHEMA: keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      KC_HOSTNAME: "https://ros2-server.tail49948f.ts.net:8443"
+      KC_HOSTNAME_STRICT: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+
+    ports:
+      - "127.0.0.1:8081:8080"
+
+    command: start-dev --features=cimd
 
     networks:
       - ai-hub-net
