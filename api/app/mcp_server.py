@@ -5,7 +5,7 @@ from urllib.parse import parse_qs
 import jwt
 from jwt import PyJWKClient
 
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, BaseModel
 
 from mcp.server import MCPServer
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -184,6 +184,18 @@ class QueryKeyToBearerMiddleware:
 
         await self.app(scope, receive, send)
 
+class HealthCheckResponse(BaseModel):
+    status: str
+    service: str
+
+
+class SearchContextResponse(BaseModel):
+    query: str
+    project_id: int | None = None
+    memory_count: int
+    document_count: int
+    memories: list[dict[str, Any]]
+    documents: list[dict[str, Any]]
 
 mcp = MCPServer(
     "AI-Hub",
@@ -203,12 +215,12 @@ mcp = MCPServer(
 
 
 @mcp.tool()
-def health_check() -> dict:
+def health_check() -> HealthCheckResponse:
     """Check whether the AI-Hub MCP server is alive."""
-    return {
-        "status": "ok",
-        "service": "ai-hub-mcp",
-    }
+    return HealthCheckResponse(
+        status="ok",
+        service="ai-hub-mcp",
+    )
 
 
 @mcp.tool()
@@ -216,18 +228,20 @@ def search_context(
     query: str,
     limit: int = 5,
     project_id: int | None = None,
-) -> dict:
+) -> SearchContextResponse:
     """Search AI-Hub memories and indexed documents together."""
     if not query.strip():
         raise ValueError("query must not be empty")
 
     limit = max(1, min(limit, 20))
 
-    return unified_search_context(
+    result = unified_search_context(
         query=query,
         limit=limit,
         project_id=project_id,
     )
+
+    return SearchContextResponse.model_validate(result)
 
 
 security = TransportSecuritySettings(
@@ -237,6 +251,10 @@ security = TransportSecuritySettings(
         "127.0.0.1:*",
         "ros2-server.tail49948f.ts.net",
         "ros2-server.tail49948f.ts.net:*",
+    ],
+    allowed_origins=[
+        "http://127.0.0.1:6274",
+        "http://localhost:6274",
     ],
 )
 

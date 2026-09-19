@@ -11,6 +11,6 @@ python-docx
 openpyxl
 python-pptx
 
-mcp[cli]
+mcp[cli]==2.2.0
 
 PyJWT[crypto]

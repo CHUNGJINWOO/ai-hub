@@ -711,6 +711,13 @@ LIMO project search
 Claude Custom Connector
 연결 pending
 
+## Documentation
+
+- [Project Status](docs/project-status.md)
+- [Development Log](docs/development-log.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [MCP Deployment](docs/MCP_DEPLOYMENT.md)
+
 26. 향후 개발
 
 우선순위:
