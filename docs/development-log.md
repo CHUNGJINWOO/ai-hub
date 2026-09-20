@@ -120,6 +120,36 @@ The following were verified:
 - The new key successfully authenticated external `tools/list`
 - The new key successfully authenticated external `tools/call`
 
+## 2026-09-20 — Project and Document MCP Tools
+
+### Core Layer Refactoring
+
+The existing Project and Document database lookup logic was separated from the FastAPI routers into reusable core modules.
+
+- `api/app/core/projects.py`
+- `api/app/core/documents.py`
+
+The REST routers continue to handle HTTP-specific behavior such as `HTTPException`, while MCP tools reuse the core lookup functions directly.
+
+### MCP Tools
+
+Added two MCP tools:
+
+- `list_projects`
+- `get_document`
+
+Both tools use Pydantic response models so that MCP `outputSchema` and `structuredContent` are generated from explicit response types.
+
+### External Verification
+
+The following were verified through MCP Inspector:
+
+- `tools/list` exposes `health_check`, `search_context`, `list_projects`, and `get_document`
+- `list_projects` returns `structuredContent` successfully
+- `get_document` with `document_id=1` returns `structuredContent` successfully
+- `get_document` with a nonexistent document ID returns `isError: true`
+- The existing REST `/projects` and `/documents` APIs remained functional after the refactoring
+
 ## Documentation Rule
 
 When a significant feature, deployment change, bug, or troubleshooting case is completed, record it in the appropriate documentation before moving to the next major stage.

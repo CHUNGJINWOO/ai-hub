@@ -116,10 +116,16 @@ The result included actual LIMO source code from:
 - MCP API-key rotation after accidental exposure
 - .env Git tracking verification
 
-### Next MCP Tools
+### Current MCP Tools
 
+- health_check
+- search_context
 - list_projects
 - get_document
+
+The four MCP tools above have been externally verified through MCP Inspector.
+
+`list_projects` and `get_document` return typed Pydantic responses and expose `outputSchema` / `structuredContent`.
 - Additional retrieval/context tools as required
 
 ## 7. Documentation

@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -12,8 +13,9 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
+from app.core.documents import get_document as fetch_document
+from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
-
 
 MCP_RESOURCE_URL = os.getenv(
     "MCP_RESOURCE_URL",
@@ -197,6 +199,36 @@ class SearchContextResponse(BaseModel):
     memories: list[dict[str, Any]]
     documents: list[dict[str, Any]]
 
+
+class ProjectSummary(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    memory_count: int
+
+
+class ListProjectsResponse(BaseModel):
+    count: int
+    projects: list[ProjectSummary]
+
+
+class GetDocumentResponse(BaseModel):
+    id: int
+    project_id: int | None = None
+    title: str
+    filename: str | None = None
+    mime_type: str | None = None
+    source: str | None = None
+    description: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    chunk_count: int
+
 mcp = MCPServer(
     "AI-Hub",
     token_verifier=KeycloakJWTVerifier(
@@ -243,6 +275,22 @@ def search_context(
 
     return SearchContextResponse.model_validate(result)
 
+@mcp.tool()
+def list_projects() -> ListProjectsResponse:
+    """List AI-Hub projects and their memory counts."""
+    result = fetch_projects()
+    return ListProjectsResponse.model_validate(result)
+
+
+@mcp.tool()
+def get_document(document_id: int) -> GetDocumentResponse:
+    """Get metadata for one AI-Hub document."""
+    result = fetch_document(document_id)
+
+    if result is None:
+        raise ValueError(f"document not found: {document_id}")
+
+    return GetDocumentResponse.model_validate(result)
 
 security = TransportSecuritySettings(
     allowed_hosts=[
