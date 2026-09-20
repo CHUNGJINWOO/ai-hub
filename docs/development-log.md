@@ -150,6 +150,50 @@ The following were verified through MCP Inspector:
 - `get_document` with a nonexistent document ID returns `isError: true`
 - The existing REST `/projects` and `/documents` APIs remained functional after the refactoring
 
+## 2026-09-20 — Backup and Recovery Validation
+
+### Backup Scope
+
+AI-Hub backup covers two persistent data areas:
+
+- PostgreSQL database
+- Uploaded files under `/mnt/data/ai-hub/documents`
+
+The PostgreSQL backup uses custom format (`pg_dump -Fc`), while uploaded files are archived as `tar.gz`.
+
+### Backup Script
+
+Added:
+
+```text
+scripts/backup.sh
+```
+
+The script:
+
+- creates timestamped PostgreSQL backups
+- creates timestamped uploaded-document archives
+- verifies that backup files are non-empty
+- verifies that the PostgreSQL archive can be read by pg_restore --list
+- verifies that the document archive can be read by tar -tzf
+### Recovery Validation
+
+A separate PostgreSQL database named aihub_restore_test was created and restored from the backup.
+
+The following counts matched between the production database and the restored database:
+
+- projects: 3
+- memories: 5
+- documents: 55
+- document_chunks: 1041
+
+The uploaded-document archive was also extracted into a temporary directory and the file count matched:
+
+- source files: 57
+- restored files: 57
+
+The temporary restore database and extraction directory were removed after verification.
+
 ## Documentation Rule
 
 When a significant feature, deployment change, bug, or troubleshooting case is completed, record it in the appropriate documentation before moving to the next major stage.

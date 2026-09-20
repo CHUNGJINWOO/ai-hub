@@ -128,6 +128,16 @@ The four MCP tools above have been externally verified through MCP Inspector.
 `list_projects` and `get_document` return typed Pydantic responses and expose `outputSchema` / `structuredContent`.
 - Additional retrieval/context tools as required
 
+### Backup and Recovery
+
+- PostgreSQL custom-format backup implemented
+- Uploaded document archive implemented
+- PostgreSQL restore tested successfully
+- Uploaded document archive restore tested successfully
+- `scripts/backup.sh` added for repeatable backup execution
+
+Automated retention and scheduled backup execution remain future operational tasks.
+
 ## 7. Documentation
 
 Development and troubleshooting information is maintained under docs/.
