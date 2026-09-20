@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Hub backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/mnt/data/ai-hub
+ExecStart=/mnt/data/ai-hub/scripts/backup.sh

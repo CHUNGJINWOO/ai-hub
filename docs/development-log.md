@@ -194,6 +194,15 @@ The uploaded-document archive was also extracted into a temporary directory and 
 
 The temporary restore database and extraction directory were removed after verification.
 
+### Automated Backup Scheduling
+
+- Extended `scripts/backup.sh` with 30-day retention cleanup.
+- Added systemd service and timer for automated backup execution.
+- Configured daily execution at 18:00 UTC (03:00 KST).
+- Verified manual systemd service execution with exit status `0/SUCCESS`.
+- Verified timer activation and next scheduled execution with `systemctl list-timers`.
+- Backup logs are available through `journalctl -u ai-hub-backup.service`.
+
 ## Documentation Rule
 
 When a significant feature, deployment change, bug, or troubleshooting case is completed, record it in the appropriate documentation before moving to the next major stage.

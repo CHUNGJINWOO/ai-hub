@@ -33,6 +33,20 @@ docker compose -f "${PROJECT_ROOT}/compose.yml" exec -T postgres \
 
 tar -tzf "${DOCUMENT_BACKUP}" > /dev/null
 
-echo "[4/4] Backup completed"
+echo "[4/5] Remove backups older than 30 days"
+
+find "${DB_BACKUP_DIR}" \
+    -type f \
+    -name 'aihub_*.dump' \
+    -mtime +30 \
+    -delete
+
+find "${DOCUMENT_BACKUP_DIR}" \
+    -type f \
+    -name 'documents_*.tar.gz' \
+    -mtime +30 \
+    -delete
+
+echo "[5/5] Backup completed"
 echo "DB:        ${DB_BACKUP}"
 echo "Documents: ${DOCUMENT_BACKUP}"
