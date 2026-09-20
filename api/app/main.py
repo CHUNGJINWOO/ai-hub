@@ -34,6 +34,27 @@ app.include_router(memories_router)
 app.include_router(documents_router)
 app.include_router(context_router)
 
+@app.get("/healthz", tags=["ops"])
+def healthz():
+    try:
+        with get_db_connection() as conn:
+            conn.execute("SELECT 1")
+
+        return {
+            "status": "ok",
+            "service": "ai-hub-api",
+            "database": "ok",
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unhealthy",
+                "service": "ai-hub-api",
+                "database": "unavailable",
+            },
+        )
 
 # -------------------------
 # Request models

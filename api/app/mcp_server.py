@@ -133,6 +133,45 @@ class KeycloakJWTVerifier(TokenVerifier):
             return None
 
 
+class HealthCheckMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Any,
+        send: Any,
+    ) -> None:
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and scope.get("path") == "/healthz"
+        ):
+            body = b'{"status":"ok","service":"ai-hub-mcp"}'
+
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                }
+            )
+
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                }
+            )
+            return
+
+        await self.app(scope, receive, send)
+
+
 class QueryKeyToBearerMiddleware:
     """
     Convert /mcp?key=<API_KEY> into:
@@ -311,4 +350,6 @@ mcp_app = mcp.streamable_http_app(
     transport_security=security,
 )
 
-app = QueryKeyToBearerMiddleware(mcp_app)
+app = HealthCheckMiddleware(
+    QueryKeyToBearerMiddleware(mcp_app)
+)

@@ -206,3 +206,14 @@ The temporary restore database and extraction directory were removed after verif
 ## Documentation Rule
 
 When a significant feature, deployment change, bug, or troubleshooting case is completed, record it in the appropriate documentation before moving to the next major stage.
+
+### Service Health Checks
+
+- Added `/healthz` endpoint to the FastAPI API.
+- API health check verifies PostgreSQL connectivity.
+- Added a lightweight `/healthz` ASGI middleware endpoint to the MCP service without modifying the Streamable HTTP `/mcp` path.
+- Verified existing MCP tools remained available after the middleware change.
+- Enabled Keycloak health and metrics endpoints.
+- Added Keycloak readiness health check through the management interface.
+- Added Docker Compose healthchecks for API, MCP, and Keycloak.
+- Verified all four core services report `healthy`.
