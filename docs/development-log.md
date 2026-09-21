@@ -217,3 +217,12 @@ When a significant feature, deployment change, bug, or troubleshooting case is c
 - Added Keycloak readiness health check through the management interface.
 - Added Docker Compose healthchecks for API, MCP, and Keycloak.
 - Verified all four core services report `healthy`.
+
+### Docker Log Rotation
+
+- Verified Docker is using the `json-file` logging driver.
+- Added per-container log rotation to `compose.yml`.
+- Configured `max-size=10m`, `max-file=3`, and compressed rotated logs.
+- Recreated all four containers to apply the logging configuration.
+- Verified the logging configuration on PostgreSQL, API, MCP, and Keycloak.
+- Confirmed `docker compose logs` continues to work with the new configuration.

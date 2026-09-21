@@ -4,6 +4,13 @@ services:
     container_name: ai-hub-postgres
     restart: unless-stopped
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
     env_file:
       - .env
 
@@ -28,6 +35,13 @@ services:
       context: ./api
     container_name: ai-hub-api
     restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
 
     depends_on:
       postgres:
@@ -70,6 +84,13 @@ services:
       context: ./api
     container_name: ai-hub-mcp
     restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
 
     depends_on:
       postgres:
@@ -125,6 +146,13 @@ services:
     image: quay.io/keycloak/keycloak:26.7.4
     container_name: ai-hub-keycloak
     restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
 
     depends_on:
       postgres:

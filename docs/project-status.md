@@ -177,6 +177,14 @@ All core services now expose or use service-specific health checks through Docke
 - Keycloak: `/health/ready` on the management interface, including database readiness
 - All four services use `restart: unless-stopped`
 
+## Logging
+
+- Docker container logs use the `json-file` driver with rotation.
+- Maximum log file size: 10 MB.
+- Maximum retained files: 3 per container.
+- Rotated logs are compressed.
+- Logging configuration is defined in `compose.yml`.
+
 ## 9. Future Operations
 
 After MCP functionality is expanded:
