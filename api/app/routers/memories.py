@@ -387,9 +387,14 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
                 else current[4]
             )
 
+            fields_set = (
+                memory.model_fields_set
+                if hasattr(memory, "model_fields_set")
+                else memory.__fields_set__
+            )
             project_id = (
                 memory.project_id
-                if memory.project_id is not None
+                if "project_id" in fields_set
                 else current[5]
             )
 
@@ -427,6 +432,7 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
                     category = %s,
                     importance = %s,
                     source = %s,
+                    project_id = %s,
                     embedding = %s,
                     updated_at = NOW()
                 WHERE id = %s
@@ -445,6 +451,7 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
                     category,
                     importance,
                     source,
+                    project_id,
                     embedding,
                     memory_id,
                 ),
