@@ -12,7 +12,17 @@ AI-Hub의 PostgreSQL/pgvector 기반 프로젝트 지식 검색 기능을 MCP
 - 프로젝트 memory + indexed document hybrid search
 - MCP client를 통한 `search_context` 호출
 
-## 2. 최종 검증된 구조
+## 2. Repository Configuration and Verification Status
+
+### Repository configuration
+
+The repository configures MCP as a Streamable HTTP service on port `8001`. Compose binds that port to `127.0.0.1:8001` on the host. The configured MCP resource URL is:
+
+`https://ros2-server.tail49948f.ts.net:10000/mcp`
+
+The MCP server allows this hostname, and Compose supplies the same resource URL to the server. The repository does not configure or start Tailscale Funnel itself.
+
+### Historical deployment topology
 
 ```text
 External MCP Client
@@ -38,32 +48,42 @@ PostgreSQL + pgvector
         |
         v
 Project / Document / Chunk
+```
 
-현재 공개 endpoint:
+URL recorded in the repository configuration and previous deployment notes:
 
-https://ros2-server.tail49948f.ts.net:10000/mcp
-3. MCP 기능
+`https://ros2-server.tail49948f.ts.net:10000/mcp`
 
-현재 제공하는 도구:
+This configuration does not establish that the external endpoint is currently reachable.
 
-health_check
+### Verification status
 
-MCP 서버가 정상적으로 실행 중인지 확인한다.
+- Historical external MCP Inspector checks are recorded in section 7 and `docs/development-log.md`.
+- Current external availability: **not verified**.
 
-search_context
+## 3. MCP 기능
 
-AI-Hub의 memory와 indexed document를 함께 검색한다.
+현재 repository code에 등록된 도구:
 
-인자:
+- `health_check`
+- `search_context`
+- `list_projects`
+- `get_document`
 
-query: string
-limit: integer = 5
-project_id: integer | null
-4. 인증 구조
+`health_check` reports MCP liveness. `search_context` searches memories and indexed documents together. `list_projects` returns project summaries, and `get_document` returns one document's metadata.
 
-현재 MCP 서버는 두 가지 인증 경로를 지원한다.
+`search_context` delegates to the shared `search_context()` implementation in `api/app/core/search.py`. The REST endpoint `GET /context/search` calls the same implementation.
 
-API Key
+MCP `search_context` arguments:
+
+- `query: string`
+- `limit: integer = 5`
+- `project_id: integer | null`
+## 4. 인증 구조
+
+Repository code configures MCP token verification for a static API key and Keycloak JWT bearer tokens. This describes the server-side validation paths; it does not verify the current external OAuth, Dynamic Client Registration, or Claude Connector flow.
+
+### API Key
 
 개인용/개발용 연결에서 사용할 수 있도록 MCP_ACCESS_TOKEN을
 정적 API key로 검증한다.
@@ -84,9 +104,9 @@ API key는 URL에 포함되므로 URL 로그/히스토리 등에 노출될 수 �
 개인용 테스트 용도로만 사용한다.
 키가 노출되면 .env의 MCP_ACCESS_TOKEN을 교체한다.
 실제 채팅/문서/Git에 secret 값을 기록하지 않는다.
-Keycloak JWT
+### Keycloak JWT
 
-기존 OAuth 경로도 유지한다.
+The verifier accepts Keycloak JWTs and checks:
 
 JWT 검증 조건:
 
@@ -99,9 +119,9 @@ iss
 sub
 aihub:read scope
 
-이를 통해 향후 표준 OAuth/MCP 인증으로 전환할 수 있다.
+The repository includes token verification and MCP authorization metadata configuration. It does not by itself verify the external OAuth/DCR user journey or current Keycloak realm/client configuration.
 
-5. Streamable HTTP 주의사항
+## 5. Streamable HTTP 주의사항
 
 MCP 서버는 Streamable HTTP를 사용한다.
 
@@ -116,8 +136,9 @@ streaming response를 middleware가 임의로 감싸는 문제 회피
 현재 middleware:
 
 QueryKeyToBearerMiddleware
-6. 발생했던 문제와 해결
-문제 1. Docker 저장공간 부족
+## 6. 발생했던 문제와 해결
+
+### 문제 1. Docker 저장공간 부족
 
 Oracle VM의 루트 디스크:
 
@@ -162,7 +183,7 @@ root = "/mnt/data/containerd"
 이후 루트 디스크 사용량이 약 90%에서 약 35% 수준으로 감소했고
 MCP image build가 정상적으로 완료되었다.
 
-문제 2. MCP의 외부 Host 거부
+### 문제 2. MCP의 외부 Host 거부 (과거 기록)
 
 외부 Funnel을 통해 접근할 때:
 
@@ -180,7 +201,7 @@ ros2-server.tail49948f.ts.net:*
 
 이후 외부 Streamable HTTP 요청이 정상적으로 처리되었다.
 
-문제 3. 인증 없는 MCP 접근
+### 문제 3. 인증 없는 MCP 접근 (과거 기록)
 
 인증 없는 외부 요청:
 
@@ -190,7 +211,7 @@ HTTP 401 Unauthorized
 
 이 응답에는 protected resource metadata 위치가 포함된다.
 
-문제 4. Claude Custom Connector OAuth
+### 문제 4. Claude Custom Connector OAuth (과거 기록)
 
 Keycloak + OAuth + CIMD를 구성했으나 Claude Custom Connector에서는:
 
@@ -204,7 +225,9 @@ ofid_...
 따라서 OAuth 구성을 유지하되, 실제 개발/검증은 API key + Bearer header
 경로를 사용한다.
 
-7. 외부 MCP 검증
+## 7. Historical External MCP Verification
+
+The following is a record of past MCP Inspector verification. It is not a check of current external availability.
 
 MCP Inspector로 다음을 검증했다.
 
@@ -222,10 +245,12 @@ Authorization: Bearer <API_KEY>
     v
 tools/list
 
-tools/list 결과:
+Initial `tools/list` result:
 
-health_check
-search_context
+- `health_check`
+- `search_context`
+
+This was the initial two-tool verification. The 2026-09-20 development log records subsequent external verification of `list_projects` and `get_document` as well.
 
 그리고 실제 tools/call search_context를 실행해:
 
@@ -239,7 +264,7 @@ query = /cmd_vel을 받는 코드는 어디에 있는가?
 scripts/remote_teleop_node.py
 src/limo_ros2/limo_base/src/limo_driver.cpp
 src/limo_ros2/limo_description/launch/gazebo_models_diff.launch.py
-8. 보안 원칙
+## 8. 보안 원칙
 
 절대 Git에 포함하지 않는다:
 
@@ -251,18 +276,12 @@ Tailscale credentials
 
 .env는 .gitignore로 제외한다.
 
-API key가 URL에 포함되는 방식은 현재 개인용 fallback이며,
-장기적으로는 표준 OAuth/Bearer 방식으로 전환하는 것을 목표로 한다.
+MCP accepts bearer tokens. The query-key form is a development fallback and may expose the key in URLs. Standard OAuth/DCR and Claude Connector behavior must be verified separately; the repository does not establish their current end-to-end availability.
 
-9. 현재 상태
-AI-Hub API                 OK
-PostgreSQL                 OK
-pgvector                   OK
-Hybrid Search              OK
-MCP Streamable HTTP        OK
-API Key authentication     OK
-Bearer header auth         OK
-MCP Inspector              OK
-search_context             OK
-LIMO project search        OK
-Claude Custom Connector    OAuth integration pending
+## 9. Repository State and External Availability
+
+- MCP tool registration in repository: `health_check`, `search_context`, `list_projects`, `get_document`
+- MCP server authentication code: API key and Keycloak JWT bearer verification
+- Historical external Inspector checks: recorded in section 7 and `docs/development-log.md`
+- Current external endpoint availability: not verified by repository contents
+- Claude Custom Connector OAuth/DCR: end-to-end operation is not verified by repository contents; previous troubleshooting notes record a pending connection

@@ -1,6 +1,6 @@
 # AI-Hub Project Status
 
-> Last updated: 2026-09-19
+> Last updated: 2026-09-28
 
 ## 1. Project
 
@@ -39,10 +39,26 @@ Development continues from this baseline.
 
 ### Document Ingestion
 
+Supported upload formats:
+
 - PDF
+- TXT
+- MD / Markdown
+- Python
+- C / C++ / Header
+- XML
+- YAML
+- JSON
+- Xacro
+- RViz
 - DOCX
 - XLSX
 - PPTX
+
+Not currently supported:
+
+- OCR
+- HWP / HWPX
 
 ### Source Code Ingestion
 
@@ -56,26 +72,40 @@ Development continues from this baseline.
 - Semantic search
 - Hybrid search
 - Code-aware reranking
+- Unified Memory + Document search through `GET /context/search`
 - LIMO project indexing
 
 ### MCP
 
 - Streamable HTTP
 - API key authentication
-- Keycloak OAuth path preserved
-- Tailscale Funnel
-- External MCP endpoint verification
-- MCP Inspector tools/list verification
-- MCP Inspector tools/call verification
+- Keycloak JWT bearer verification configured; external OAuth/DCR flow is not verified here
+- Historical Tailscale Funnel deployment and external MCP verification are recorded; current external availability is not verified
+- Historical MCP Inspector `tools/list` and `tools/call` verifications are recorded
 - Typed MCP response models with Pydantic
 - outputSchema verification
 - structuredContent verification
 
-## 5. Currently Verified MCP Tools
+## 5. MCP Tools and Verification History
 
-### health_check
+### Current MCP Tools
 
-Implemented and externally verified.
+The repository currently registers these four tools:
+
+- `health_check`
+- `search_context`
+- `list_projects`
+- `get_document`
+
+`search_context` searches memories and indexed documents through the shared unified search function. The REST API exposes the same search through `GET /context/search`.
+
+### Historical External Verification
+
+The initial external MCP Inspector verification covered `health_check` and `search_context`:
+
+#### health_check
+
+Implemented. The initial external verification recorded:
 
 Verified:
 
@@ -84,9 +114,9 @@ Verified:
 - tools/call
 - structuredContent
 
-### search_context
+#### search_context
 
-Implemented and externally verified.
+Implemented. The initial external verification recorded:
 
 Verified:
 
@@ -104,6 +134,8 @@ The result included actual LIMO source code from:
 
 `src/limo_ros2/limo_base/src/limo_driver.cpp`
 
+The 2026-09-20 development log records the subsequent addition and external Inspector verification of `list_projects` and `get_document`. These are historical verification records; current external endpoint availability is not verified by this repository status document.
+
 ## 6. Current Development
 
 ### Completed in the Current MCP Phase
@@ -116,17 +148,12 @@ The result included actual LIMO source code from:
 - MCP API-key rotation after accidental exposure
 - .env Git tracking verification
 
-### Current MCP Tools
+### Completed MCP Output Work
 
-- health_check
-- search_context
-- list_projects
-- get_document
+- Typed Pydantic response models for the current MCP tools
+- `outputSchema` and `structuredContent` support recorded for the MCP tools
 
-The four MCP tools above have been externally verified through MCP Inspector.
-
-`list_projects` and `get_document` return typed Pydantic responses and expose `outputSchema` / `structuredContent`.
-- Additional retrieval/context tools as required
+Further retrieval/context tools may be added as needed.
 
 ### Backup and Recovery
 
@@ -143,7 +170,7 @@ The four MCP tools above have been externally verified through MCP Inspector.
 - Automated execution is managed by systemd:
  - `ops/systemd/ai-hub-backup.service`
  - `ops/systemd/ai-hub-backup.timer`
- - S chedule: daily at 18:00 UTC (03:00 KST).
+ - Schedule: daily at 18:00 UTC (03:00 KST).
 - Backup execution status can be checked with `journalctl -u ai-hub-backup.service`.
 - PostgreSQL and uploaded-document restore procedures were separately validated.
 
@@ -167,6 +194,19 @@ Claude Custom Connector integration is currently deferred.
 
 OAuth and Dynamic Client Registration work should be handled as a separate track after the MCP tool interface is further expanded and stabilized.
 
+### Planned Product Features
+
+The following features are not implemented in the current repository:
+
+- LLM-generated answers from search results
+- Answers with citations to retrieved sources
+- Conversation context
+- OCR
+- HWP / HWPX ingestion
+- Automatic duplicate-upload detection or prevention
+- Selective re-embedding of changed files
+- Web UI
+
 ## Service Health Checks
 
 All core services now expose or use service-specific health checks through Docker Compose:
@@ -187,14 +227,12 @@ All core services now expose or use service-specific health checks through Docke
 
 ## 9. Future Operations
 
-After MCP functionality is expanded:
+Remaining operational work:
 
-- Backup strategy
-- Restore procedure
-- Operational monitoring
-- Secret and API key management
+- Monitor scheduled backup outcomes and run periodic restore drills
+- Operational alerting
+- Secret and API key lifecycle management
 - Security review
-- Deployment documentation
 - Production-oriented cleanup
 
 ## 10. Final Goal
