@@ -230,29 +230,6 @@ def list_documents(project_id: int | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{document_id}")
-def get_document(document_id: int):
-    try:
-        result = fetch_document(document_id)
-
-        if result is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Document not found",
-            )
-
-        return result
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
-
-
 # -------------------------
 # Document semantic search
 # -------------------------
@@ -633,6 +610,29 @@ def update_document(document_id: int, document: DocumentUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{document_id}")
+def get_document(document_id: int):
+    try:
+        result = fetch_document(document_id)
+
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found",
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+
 @router.delete("/{document_id}")
 def delete_document(document_id: int):
     try:
@@ -817,4 +817,3 @@ def list_document_chunks(document_id: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
