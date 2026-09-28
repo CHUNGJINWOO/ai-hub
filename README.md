@@ -397,6 +397,7 @@ FastAPI → 127.0.0.1:8000
 [x] relative_path
 [x] Semantic Search
 [x] Hybrid Search
+[x] Memory + Document 통합 Context (`GET /context/search`)
 [x] Code-aware reranking
 [x] ROS2/LIMO indexing
 [x] PDF/PPTX 실제 테스트
@@ -404,7 +405,6 @@ FastAPI → 127.0.0.1:8000
 16. 다음 개발 계획
 [ ] Search → LLM RAG Answer
 [ ] 검색 결과에 출처를 포함한 답변
-[ ] Memory + Document 통합 Context
 [ ] Conversation Context
 [ ] 문서 삭제 시 실제 파일 cleanup
 [ ] MIME type 정규화
@@ -467,16 +467,18 @@ api/app/mcp_server.py
 
 Streamable HTTP
 
-Endpoint:
+Repository-configured MCP resource URL (current external availability is not verified):
 
 https://ros2-server.tail49948f.ts.net:10000/mcp
 
-현재 MCP tool:
+현재 repository에 등록된 MCP tool:
 
 health_check
 search_context
+list_projects
+get_document
 
-search_context는 기존 hybrid search를 그대로 재사용한다.
+REST `GET /context/search`와 MCP `search_context`는 같은 unified `search_context()` 구현을 사용한다. MCP 전용으로 Memory / Document 검색 로직을 따로 구현하지 않는다.
 
 Memory
 +
@@ -589,7 +591,7 @@ MCP Inspector를 이용한 외부 tools/list:
 health_check
 search_context
 
-정상 확인.
+위 목록은 초기 2-tool 상태에서 기록된 과거 검증 결과다. 이후 `list_projects`, `get_document` tool이 추가되었다. 현재 외부 endpoint 가용성은 repository만으로 확인할 수 없다.
 
 실제 tools/call:
 
@@ -682,7 +684,9 @@ MCP Inspector
 Claude 연결이 정상화되기 전까지 서버 쪽 코드를 임의로 변경하지
 않는 것을 원칙으로 한다.
 
-25. 현재 안정 상태
+25. 과거 안정 상태 검증 기록
+
+다음은 당시 기록된 검증 결과이며, 현재 서비스 상태나 현재 외부 endpoint 가용성을 뜻하지 않는다.
 
 AI-Hub API
 정상
@@ -724,10 +728,8 @@ Claude Custom Connector
 
 Search → LLM RAG Answer
 검색 결과 출처 표시
-Memory + Document 통합 Context
 Conversation Context
-MCP tool 확장
-structuredContent 개선
+추가 MCP tool 개발 (필요 시)
 중복 업로드 자동 방지
 변경 파일 선택적 재임베딩
 OCR
