@@ -207,6 +207,17 @@ The temporary restore database and extraction directory were removed after verif
 
 When a significant feature, deployment change, bug, or troubleshooting case is completed, record it in the appropriate documentation before moving to the next major stage.
 
+## 2026-09-29 — Context Assembly
+
+Added a context assembly core layer and additive `GET /context/assemble` REST
+endpoint. Assembly calls the existing `app.core.search.search_context()` once,
+then normalizes memory and document chunks into typed context items with
+stable source references. Source records preserve only retrieved metadata,
+including project/document/chunk IDs, paths, page numbers, source strings,
+distance, and hybrid score where present. Empty-query behavior remains a 400
+at the REST boundary; `/context/search` and MCP `search_context` are unchanged.
+No LLM or prompt generation is involved.
+
 ### Service Health Checks
 
 - Added `/healthz` endpoint to the FastAPI API.

@@ -73,7 +73,12 @@ Not currently supported:
 - Hybrid search
 - Code-aware reranking
 - Unified Memory + Document search through `GET /context/search`
+- Provenance-aware AI context assembly through `GET /context/assemble`
 - LIMO project indexing
+
+`GET /context/assemble` reuses the shared unified search and returns normalized
+memory/document items plus citation-ready source records. It does not generate
+answers or call an LLM. The existing `/context/search` response is unchanged.
 
 ### MCP
 
