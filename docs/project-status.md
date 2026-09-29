@@ -1,6 +1,6 @@
 # AI-Hub Project Status
 
-> Last updated: 2026-09-28
+> Last updated: 2026-09-29
 
 ## 1. Project
 
@@ -80,8 +80,8 @@ Not currently supported:
 - Streamable HTTP
 - API key authentication
 - Keycloak JWT bearer verification configured; external OAuth/DCR flow is not verified here
-- Historical Tailscale Funnel deployment and external MCP verification are recorded; current external availability is not verified
-- Historical MCP Inspector `tools/list` and `tools/call` verifications are recorded
+- Oracle Cloud external MCP endpoint was end-to-end verified on 2026-09-29 through the Streamable HTTP protocol, including authentication, session establishment, `initialize`, `notifications/initialized`, `tools/list`, and `tools/call`
+- REST `/context/search` and MCP `search_context` were verified against the deployed environment with matching results
 - Typed MCP response models with Pydantic
 - outputSchema verification
 - structuredContent verification

@@ -226,3 +226,105 @@ When a significant feature, deployment change, bug, or troubleshooting case is c
 - Recreated all four containers to apply the logging configuration.
 - Verified the logging configuration on PostgreSQL, API, MCP, and Keycloak.
 - Confirmed `docker compose logs` continues to work with the new configuration.
+
+## 2026-09-29 — MCP Streamable HTTP Protocol Verification
+
+### Oracle Cloud Deployment Verification
+
+The deployed MCP server was verified end-to-end through the MCP Streamable HTTP protocol.
+
+The verification was performed against the actual Oracle Cloud deployment without modifying the MCP implementation.
+
+Infrastructure:
+
+- `ai-hub-api`: healthy
+- `ai-hub-mcp`: healthy
+- `ai-hub-keycloak`: healthy
+- `ai-hub-postgres`: healthy
+
+REST verification:
+
+- `GET /healthz`: PASS
+- `GET /context/search`: PASS
+
+### MCP Authentication and Session Flow
+
+An unauthenticated request to `/mcp` returned:
+
+HTTP 401 Unauthorized
+
+Using the configured MCP access token, the following flow was successfully verified:
+
+Authorization
+    ↓
+initialize
+    ↓
+Mcp-Session-Id
+    ↓
+notifications/initialized
+    ↓
+tools/list
+    ↓
+tools/call
+
+The server negotiated:
+
+- protocolVersion: `2025-11-25`
+- serverInfo.name: `AI-Hub`
+
+### MCP Tools
+
+`tools/list` confirmed the four registered tools:
+
+- `health_check`
+- `search_context`
+- `list_projects`
+- `get_document`
+
+The tool definitions exposed both `inputSchema` and `outputSchema`.
+
+Verified `tools/call` operations:
+
+- `health_check`: PASS
+- `list_projects`: PASS
+- `get_document(document_id=47)`: PASS
+- `get_document(document_id=999999)`: PASS — MCP tool error returned with `isError: true`
+- `search_context`: PASS
+
+`structuredContent` was confirmed in successful tool responses.
+
+### REST and MCP Search Consistency
+
+The same query was executed through both interfaces:
+
+`cmd_vel publisher`
+
+REST:
+
+`GET /context/search`
+
+MCP:
+
+`tools/call` → `search_context`
+
+The REST and MCP results were compared using:
+
+- memory IDs
+- document IDs
+- project IDs
+- document/chunk information
+- distance
+- hybrid score
+- retrieved content
+
+The results matched.
+
+This confirms in the deployed environment that MCP `search_context` uses the same unified search implementation as the REST `/context/search` endpoint.
+
+### Verification Result
+
+The complete MCP Streamable HTTP protocol flow was successfully verified against the deployed Oracle Cloud server.
+
+No application code was modified during this verification.
+
+The previous MCP troubleshooting and historical verification records remain unchanged.
