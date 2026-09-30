@@ -98,13 +98,13 @@ flowchart TD
     MCP_SEARCH["MCP search_context(query, limit, project_id)"]
     REST_SEARCH["REST GET /context/search"]
     REST_ASSEMBLE["REST GET /context/assemble"]
-    ASSEMBLY["Context assembly\nassemble_canonical_context()"]
+    ASSEMBLY_REQUEST["Context assembly request\nassemble_canonical_context()"]
     UNIFIED["shared search_context()"]
     EMBEDDING["Create query embedding"]
     MEMORY["Memory semantic retrieval"]
     DOCUMENT["Document retrieval: semantic, keyword, and code-aware ranking"]
     RESULTS["Unified search results"]
-    CANONICAL["Canonical context output"]
+    CANONICAL_OUTPUT["Canonical context output"]
     RESPONSE["REST response"]
     SEARCH_RESPONSE["Search response to MCP / REST client"]
     CONSUMER["Relevant context returned to client"]
@@ -117,8 +117,8 @@ flowchart TD
     REQUEST --> REST_ASSEMBLE
     MCP_SEARCH --> UNIFIED
     REST_SEARCH --> UNIFIED
-    REST_ASSEMBLE --> ASSEMBLY
-    ASSEMBLY --> UNIFIED
+    REST_ASSEMBLE --> ASSEMBLY_REQUEST
+    ASSEMBLY_REQUEST --> UNIFIED
     UNIFIED --> EMBEDDING
     EMBEDDING --> MEMORY
     EMBEDDING --> DOCUMENT
@@ -126,9 +126,8 @@ flowchart TD
     DOCUMENT --> RESULTS
     RESULTS --> SEARCH_RESPONSE
     SEARCH_RESPONSE --> CONSUMER
-    RESULTS --> ASSEMBLY
-    ASSEMBLY --> CANONICAL
-    CANONICAL --> RESPONSE
+    RESULTS --> CANONICAL_OUTPUT
+    CANONICAL_OUTPUT --> RESPONSE
     RESPONSE --> CONSUMER
     PROJECT_TOOL --> CONSUMER
     DOCUMENT_TOOL --> CONSUMER
