@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 import unittest
@@ -8,9 +9,13 @@ import psycopg
 from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
 
+os.environ.setdefault("MCP_ACCESS_TOKEN", "test-only-mcp-token")
+
 from app.core.context_assembly import assemble_canonical_context
 from app.core.search import search_context
 from app.main import app
+
+from app.mcp_server import mcp
 
 
 DSN = os.getenv("AIHUB_CONTEXT_E2E_DSN")
@@ -253,6 +258,32 @@ class ContextPostgresE2ETests(unittest.TestCase):
             all(
                 item.get("project_id") == self.primary_id
                 for item in searched_json["documents"]
+            )
+        )
+
+    def test_real_mcp_get_context_returns_project_scoped_canonical_context(self):
+        result = asyncio.run(
+            mcp.call_tool(
+                "get_context",
+                {
+                    "query": "E2E primary",
+                    "limit": 1,
+                    "project_id": self.primary_id,
+                },
+            )
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertIsNotNone(result.structured_content)
+        payload = result.structured_content
+        self.assertEqual(payload["context_schema_version"], "1")
+        self.assertEqual(payload["project_id"], self.primary_id)
+        self.assertEqual(payload["memory_count"], 1)
+        self.assertEqual(payload["document_count"], 1)
+        self.assertTrue(
+            all(
+                source.get("project_id") == self.primary_id
+                for source in payload["sources"]
             )
         )
 

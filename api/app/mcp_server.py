@@ -13,6 +13,10 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
+from app.core.context_assembly import (
+    CanonicalContext,
+    assemble_canonical_context,
+)
 from app.core.documents import get_document as fetch_document
 from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
@@ -313,6 +317,26 @@ def search_context(
     )
 
     return SearchContextResponse.model_validate(result)
+
+
+@mcp.tool()
+def get_context(
+    query: str,
+    limit: int = 5,
+    project_id: int | None = None,
+) -> CanonicalContext:
+    """Assemble project-scoped canonical context for an AI agent."""
+    if not query.strip():
+        raise ValueError("query must not be empty")
+
+    limit = max(1, min(limit, 20))
+
+    return assemble_canonical_context(
+        query=query,
+        limit=limit,
+        project_id=project_id,
+    )
+
 
 @mcp.tool()
 def list_projects() -> ListProjectsResponse:
