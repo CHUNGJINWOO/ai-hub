@@ -1,17 +1,21 @@
 """Transform unified search results into a provenance-aware AI context."""
 
+from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.core.search import search_context
+
+
+ContextKind = Literal["memory", "document"]
 
 
 class ContextSource(BaseModel):
     """A retrievable source record suitable for citations."""
 
     source_id: str
-    kind: Literal["memory", "document"]
+    kind: ContextKind
     project_id: int | None = None
     memory_id: int | None = None
     document_id: int | None = None
@@ -29,13 +33,60 @@ class ContextItem(BaseModel):
     """Normalized content item with an explicit link to its provenance."""
 
     item_id: str
-    kind: Literal["memory", "document"]
+    kind: ContextKind
     content: str
     source_id: str
     metadata: dict[str, Any]
 
 
+class CanonicalContext(BaseModel):
+    """Transport-neutral context with uniform items and source references."""
+
+    context_schema_version: Literal["1"] = "1"
+    query: str
+    project_id: int | None = None
+    memory_count: int
+    document_count: int
+    items: list[ContextItem]
+    sources: list[ContextSource]
+
+    @model_validator(mode="after")
+    def validate_source_references(self) -> "CanonicalContext":
+        sources_by_id = {source.source_id: source for source in self.sources}
+        if len(sources_by_id) != len(self.sources):
+            raise ValueError("source_id values must be unique")
+
+        item_ids = [item.item_id for item in self.items]
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError("item_id values must be unique")
+
+        for item in self.items:
+            source = sources_by_id.get(item.source_id)
+            if source is None:
+                raise ValueError(
+                    f"missing source for context item: {item.source_id}"
+                )
+            if source.kind != item.kind:
+                raise ValueError(
+                    f"context item and source kinds differ: {item.source_id}"
+                )
+
+        if {item.source_id for item in self.items} != set(sources_by_id):
+            raise ValueError("every context source must be linked to an item")
+
+        if self.memory_count != sum(item.kind == "memory" for item in self.items):
+            raise ValueError("memory_count does not match context items")
+        if self.document_count != sum(
+            item.kind == "document" for item in self.items
+        ):
+            raise ValueError("document_count does not match context items")
+
+        return self
+
+
 class AssembledContext(BaseModel):
+    """Legacy REST response shape retained for existing consumers."""
+
     query: str
     project_id: int | None = None
     memory_count: int
@@ -45,15 +96,48 @@ class AssembledContext(BaseModel):
     sources: list[ContextSource]
 
 
-def assemble_context(
+def _validate_search_result(result: Any) -> None:
+    if not isinstance(result, Mapping):
+        raise ValueError("search_context must return a mapping")
+
+    for key in ("query", "memories", "documents"):
+        if key not in result:
+            raise ValueError(f"search_context result is missing: {key}")
+
+    for key in ("memories", "documents"):
+        values = result[key]
+        if not isinstance(values, list):
+            raise ValueError(
+                f"search_context result field must be a list: {key}"
+            )
+        if not all(isinstance(value, Mapping) for value in values):
+            raise ValueError(
+                f"search_context result items must be mappings: {key}"
+            )
+
+        required_keys = (
+            ("id", "content")
+            if key == "memories"
+            else ("chunk_id", "content")
+        )
+        for value in values:
+            missing = [item for item in required_keys if item not in value]
+            if missing:
+                raise ValueError(
+                    f"search_context result item is missing "
+                    f"{', '.join(missing)}: {key}"
+                )
+
+
+def assemble_canonical_context(
     query: str,
     limit: int = 5,
     project_id: int | None = None,
-) -> dict[str, Any]:
-    """Search once and normalize results while retaining actual provenance."""
+) -> CanonicalContext:
+    """Search once and normalize results into the canonical context model."""
     result = search_context(query=query, limit=limit, project_id=project_id)
-    memories: list[ContextItem] = []
-    documents: list[ContextItem] = []
+    _validate_search_result(result)
+    items: list[ContextItem] = []
     sources: list[ContextSource] = []
 
     for raw in result["memories"]:
@@ -69,7 +153,7 @@ def assemble_context(
                 distance=raw.get("distance"),
             )
         )
-        memories.append(
+        items.append(
             ContextItem(
                 item_id=source_id,
                 kind="memory",
@@ -102,7 +186,7 @@ def assemble_context(
                 hybrid_score=raw.get("hybrid_score"),
             )
         )
-        documents.append(
+        items.append(
             ContextItem(
                 item_id=source_id,
                 kind="document",
@@ -116,12 +200,37 @@ def assemble_context(
             )
         )
 
-    return AssembledContext(
+    return CanonicalContext(
+        context_schema_version="1",
         query=result["query"],
         project_id=result.get("project_id"),
-        memory_count=len(memories),
-        document_count=len(documents),
+        memory_count=sum(item.kind == "memory" for item in items),
+        document_count=sum(item.kind == "document" for item in items),
+        items=items,
+        sources=sources,
+    )
+
+
+def assemble_context(
+    query: str,
+    limit: int = 5,
+    project_id: int | None = None,
+) -> dict[str, Any]:
+    """Adapt canonical context to the existing REST response shape."""
+    context = assemble_canonical_context(
+        query=query,
+        limit=limit,
+        project_id=project_id,
+    )
+    memories = [item for item in context.items if item.kind == "memory"]
+    documents = [item for item in context.items if item.kind == "document"]
+
+    return AssembledContext(
+        query=context.query,
+        project_id=context.project_id,
+        memory_count=context.memory_count,
+        document_count=context.document_count,
         memories=memories,
         documents=documents,
-        sources=sources,
+        sources=context.sources,
     ).model_dump()

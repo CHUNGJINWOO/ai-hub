@@ -218,6 +218,25 @@ distance, and hybrid score where present. Empty-query behavior remains a 400
 at the REST boundary; `/context/search` and MCP `search_context` are unchanged.
 No LLM or prompt generation is involved.
 
+## 2026-09-30 — Canonical Context Contract
+
+Added an internal, versioned canonical context model with uniform memory and
+document items and source-reference validation. The existing
+`assemble_context()` function adapts that model to the unchanged REST response
+shape with separate `memories` and `documents` arrays. Search response
+contracts and MCP tools remain unchanged; no MCP context-assembly tool,
+authorization scope, token budget, or prompt generation was added.
+
+Contract tests cover unified search result shape and project filters, canonical
+item/source consistency, nullable provenance, empty results, and preservation
+of the legacy REST response shapes.
+
+The assembly boundary also rejects malformed shared-search results before
+normalization, including missing top-level collections and non-mapping result
+items. The REST route forwards `limit` and `project_id` and preserves the
+existing `/context/search` contract. Context Assembly tests pass locally; no
+Production database or MCP Context Assembly tool is involved.
+
 ### Service Health Checks
 
 - Added `/healthz` endpoint to the FastAPI API.

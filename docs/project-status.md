@@ -78,7 +78,15 @@ Not currently supported:
 
 `GET /context/assemble` reuses the shared unified search and returns normalized
 memory/document items plus citation-ready source records. It does not generate
-answers or call an LLM. The existing `/context/search` response is unchanged.
+answers or call an LLM. The core also has a versioned canonical context model
+with uniform items; the REST assembly endpoint adapts it to the existing
+`memories`/`documents` response shape. The existing `/context/search` response
+is unchanged, and no MCP context-assembly tool is registered.
+Malformed shared-search results are rejected before normalization, and the
+Context Assembly test suite covers canonical source/item invariants, route
+forwarding, malformed results, empty results, and `/context/search`
+regression behavior. This milestone does not add a Production integration or
+an MCP Context Assembly tool.
 
 ### MCP
 
@@ -239,6 +247,19 @@ Remaining operational work:
 - Secret and API key lifecycle management
 - Security review
 - Production-oriented cleanup
+
+### Migration foundation
+
+The repository now contains DB-free migration foundation modules:
+
+- migration filename/order/checksum validation
+- canonical schema JSON normalization and serialization
+- semantic schema fingerprinting with repository-name diagnostics
+- explicit PostgreSQL and pgvector compatibility result checks
+
+PostgreSQL catalog introspection, metadata persistence, baseline registration,
+schema drift execution, and the migration runner are not implemented. These
+modules do not execute SQL or change the existing runtime bootstrap.
 
 ## 10. Final Goal
 
