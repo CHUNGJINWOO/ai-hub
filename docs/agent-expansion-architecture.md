@@ -1,0 +1,456 @@
+# AI-Hub Agent Expansion Future Architecture / Design Proposal
+
+**문서 성격:** 미래 아키텍처 및 설계 제안
+**기준 repository baseline:** `9ff0a9d` (`main`)
+**기준일:** 2026-10-02
+
+이 문서는 현재 AI-Hub에 구현된 Knowledge Hub/MCP 기반과 향후 Agent
+Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 표기는
+현재 runtime 기능이나 제품 지원을 의미하지 않는다.
+
+## 1. 현재 baseline과 문서화 원칙
+
+`9ff0a9d` 기준으로 현재 repository에는 다음 기반이 구현되어 있다.
+
+- Project
+- Memory
+- Document
+- DocumentChunk
+- 문서 및 source code ingestion
+- unified semantic/hybrid search
+- canonical Context Assembly와 provenance
+- REST `GET /context/search`
+- REST `GET /context/assemble`
+- MCP tools: `health_check`, `search_context`, `list_projects`, `get_document`
+- FastAPI Context Assembly HTTP integration tests
+- disposable PostgreSQL 17 + pgvector Context Assembly E2E validation
+
+현재 구현은 검색, 지식 저장, provenance-aware context 정규화, REST/MCP
+접근 경계까지다. LLM 답변 생성, conversation/session runtime, Agent
+runner, provider abstraction, OCR, HWP/HWPX ingestion, web UI는 현재
+구현된 기능으로 취급하지 않는다.
+
+`get_context` MCP capability처럼 baseline commit 이후의 local uncommitted
+변경은 이 문서의 구현 완료 목록에 포함하지 않는다. 실제 구현 상태는
+repository의 committed code와 관련 테스트를 기준으로 다시 확인해야 한다.
+
+과거 조사 시점의 checkout, commit, remote verification, working tree
+상태는 현재 baseline의 사실로 사용하지 않는다. 특히 `docs/architecture.md`
+는 현재 repository에 존재하는 tracked 문서이며, 과거에 없었다는 관찰은
+현재 상태 설명에 포함하지 않는다.
+
+## 2. 현재 AI-Hub architecture boundary
+
+```text
+AI / Agent clients
+        │
+        ├── REST API
+        └── MCP
+             │
+          AI-Hub Core
+             │
+    Project / Memory / Document / Code
+             │
+       Unified Search
+             │
+      Canonical Context Assembly
+             │
+   PostgreSQL + pgvector project data
+```
+
+### 현재 책임
+
+- **Project:** 여러 지식 공간을 구분하는 project identity와 project-scoped
+  filtering을 제공한다. 현재 project filtering은 data filtering이며
+  tenant authorization을 의미하지 않는다.
+- **Memory:** project와 연결될 수 있는 구조화된 기억/사실 데이터를 저장하고
+  조회한다.
+- **Document:** 문서와 source code를 document로 저장한다.
+- **DocumentChunk:** document의 검색 가능한 chunk와 embedding, provenance
+  metadata를 저장한다.
+- **Search:** memory와 document chunk를 unified semantic/hybrid 방식으로
+  검색하고 `project_id` 범위를 retrieval까지 전달한다.
+- **Context Assembly:** 검색 결과를 canonical item/source 구조로 정규화하고
+  item-source reference, kind, count invariant를 보장한다. LLM을 호출하거나
+  답변을 생성하지 않는다.
+- **REST:** 현재 `/context/search`와 `/context/assemble`를 외부 HTTP
+  consumer에 제공한다.
+- **MCP:** 현재 네 개의 Knowledge access tool을 Streamable HTTP 경계로
+  제공한다. MCP는 agent runtime이 아니다.
+- **AI/Agent:** 현재 AI-Hub core가 소유하는 runtime 계층이 아니다. 외부
+  agent host가 REST/MCP를 통해 지식과 context를 소비하는 구조를 전제로 한다.
+
+## 3. Target Agent Expansion architecture
+
+```text
+AI-Hub
+│
+├── Knowledge
+├── Context
+├── MCP / Tools
+├── Skills
+├── Workflows
+├── Memory
+└── Model Providers
+```
+
+### Knowledge
+
+Knowledge는 AI-Hub core의 현재 책임이다.
+
+- Projects
+- Documents
+- Code
+- Search
+
+모든 project는 동일한 project-agnostic 계약을 사용한다. LIMO/ROS2는
+대표적인 project/use case일 수 있지만 AI-Hub의 platform boundary가 아니다.
+
+### Context
+
+Context 계층은 Knowledge 검색 결과를 agent가 소비할 수 있는 형태로
+정규화한다.
+
+- Canonical Context
+- provenance와 source reference
+- memory/document item normalization
+- project scope와 count/invariant 보존
+
+현재 Context Assembly는 이 계층의 구현된 기반이며, 향후 agent-facing
+context API의 안정적인 계약으로 확장할 수 있다.
+
+### MCP / Tools
+
+MCP/Tools 계층은 AI-Hub Knowledge MCP와 외부 MCP를 구분한다.
+
+- **AI-Hub Knowledge MCP:** AI-Hub project, memory, document, search,
+  context capability에 접근하는 경계
+- **External MCP:** GitHub, browser, CI/CD 등 외부 시스템과의 future
+  integration
+
+GitHub/browser MCP는 현재 AI-Hub core의 구현이 아니다. MCP는 도구 접근
+경계이며 agent planner, session manager, model runtime을 대신하지 않는다.
+
+### Skills
+
+Skills는 재사용 가능한 절차·도메인 지식·검증 규칙을 표현하는 future
+agent-side capability다.
+
+- Architecture
+- Robotics
+- Scientific
+- 기타 domain-specific skills
+
+Skill은 Project, Document, Memory 같은 core data entity가 아니다. 외부
+skill은 검토·버전 고정·권한 검증 후 선택적으로 사용해야 하며 AI-Hub
+runtime dependency로 자동 편입하지 않는다.
+
+### Workflows
+
+Workflows는 작업 순서와 승인/정책 경계를 정의하는 future agent-side
+계층이다.
+
+- planning
+- review
+- execution
+- approval/policy
+
+Workflow는 Knowledge retrieval 결과를 사용하지만, retrieval 자체와
+동일하지 않다. 실행 권한과 변경 승인은 workflow/host policy가 담당한다.
+
+### Memory
+
+Memory는 현재 구현된 project/memory 데이터와 future agent state를
+구분해야 한다.
+
+- session memory
+- project state
+- troubleshooting history
+- future handoff/state
+
+현재 Memory entity가 session runtime memory나 자동 handoff system을
+의미하지는 않는다. retention, correction, deletion, provenance 정책을
+먼저 정의한 뒤 별도 milestone으로 설계한다.
+
+### Model Providers
+
+Model Provider 계층은 특정 vendor/model에 종속되지 않는 future abstraction
+이다.
+
+- General LLM
+- Coding Model
+- Vision Model
+- Speech Model
+- Structured / Classification Model
+
+Provider-specific authentication, pricing, retention, latency, benchmark,
+failure behavior는 provider boundary 뒤에 둔다. AI-Hub core가 특정
+vendor/model을 기본 요구사항으로 갖지 않도록 한다.
+
+## 4. Generative LLM과 Structured Model의 경계
+
+```text
+Agent
+        │
+   ┌────┴─────┐
+   ↓          ↓
+Generative   Structured
+LLM          Model
+   │          │
+   ↓          ↓
+Natural      Structured
+Language     Program Output
+   └────┬─────┘
+        ↓
+    Workflow / Tool
+```
+
+### Generative LLM
+
+- 사람에게 설명하는 자연어 response
+- 자연어 reasoning과 synthesis
+- code/document generation
+
+### Structured Model
+
+- classification
+- probability/confidence
+- state estimation
+- structured decision output
+- downstream program input
+
+예를 들어 센서 입력은 다음과 같은 program-oriented 결과로 변환될 수
+있다.
+
+```text
+LiDAR / Camera
+      ↓
+Structured Model
+      ↓
+{
+  obstacle: true,
+  confidence: 0.97,
+  distance: 0.82,
+  urgency: 0.91
+}
+      ↓
+Navigation / Avoidance
+```
+
+위 숫자는 architecture illustration일 뿐이며 실제 모델 성능, 정확도,
+안전성 또는 benchmark 결과가 아니다. 실제 provider를 도입할 때는
+검증 데이터셋, 재현 가능한 benchmark, 비용, latency, privacy, failure
+mode를 별도로 확인한다.
+
+특정 영상이나 외부 자료에서 주장하는 특정 모델의 가격, “5배 저렴”,
+“hallucination zero”, 초당 판단 횟수, 다른 모델보다 높은 정확도 등은
+현재 AI-Hub architecture의 사실이나 요구사항으로 기록하지 않는다.
+
+> Structured / Program-oriented Model이라는 개념은 향후 AI-Hub Model
+> Provider Layer에서 고려할 수 있다. 특정 모델의 성능, 비용,
+> hallucination rate 및 benchmark 결과는 별도의 검증이 필요하며 현재
+> AI-Hub 구현의 요구사항이나 사실로 취급하지 않는다.
+
+## 5. M0–M5 future roadmap
+
+각 milestone은 target architecture다. 상태는 현재 committed repository
+구현을 기준으로 표시하며, 제안된 항목을 이미 제공되는 기능으로 해석하지
+않는다.
+
+### M0 — Core Infrastructure
+
+- Knowledge
+- Search
+- Context Assembly
+- MCP
+
+**현재 상태:** largely implemented.
+Project/Memory/Document/DocumentChunk, unified search, canonical Context
+Assembly, REST context routes, 현재 MCP 네 개 tool, HTTP integration 및
+PostgreSQL 17 + pgvector E2E가 구현·검증되어 있다. 추가적인 MCP capability는
+별도 변경으로 다룬다.
+
+### M1 — Agent Layer
+
+- Skills
+- Workflows
+- Policy
+- Hooks
+
+**현재 상태:** architecture/initial capability stage.
+저장소의 agent workflow 문서는 coding/change policy이며, 이것만으로
+runtime skill registry, workflow executor, hook system이 구현된 것은 아니다.
+첫 단계는 read-only context 사용과 검증 절차를 host-side에서 정의하는
+것이다.
+
+### M2 — Memory
+
+- Session
+- Project State
+- Troubleshooting
+
+**현재 상태:** future/planned.
+현재 Memory entity와 session/handoff/project-state runtime을 혼동하지
+않는다. retention과 correction 정책을 포함한 별도 설계가 필요하다.
+
+### M3 — Domain Intelligence
+
+- Robotics
+- Engineering
+- Scientific
+- Medical
+
+**현재 상태:** future/planned.
+도메인 skill은 project-agnostic core 위의 선택적 capability다. Medical
+영역은 연구/문헌 지원과 임상 판단을 명확히 분리해야 한다.
+
+### M4 — Model Layer
+
+- General LLM
+- Coding Models
+- Vision Models
+- Speech Models
+- Structured / Classification Models
+
+**현재 상태:** future/planned.
+provider interface, evaluation set, provenance, 비용·latency·privacy
+정책이 정해지기 전에는 특정 provider를 core에 결합하지 않는다.
+
+### M5 — Automation
+
+- GitHub
+- Browser
+- Testing
+- Documentation
+- CI/CD
+
+**현재 상태:** future/planned.
+외부 시스템 connector와 자동화는 최소 권한, 승인, secret, prompt
+injection, audit 경계를 갖춘 별도 integration으로 다룬다.
+
+## 6. Agent Expansion principles
+
+1. AI-Hub core remains project-agnostic.
+2. LIMO is a project/use case, not the platform boundary.
+3. Agent execution remains separate from knowledge infrastructure.
+4. Skills are reusable capabilities, not core data entities.
+5. MCP is an access/integration boundary, not the agent runtime itself.
+6. Model Providers are replaceable infrastructure.
+7. Generative and structured inference can coexist.
+8. Structured model output should be machine-consumable.
+9. Model/vendor-specific behavior must stay behind provider boundaries.
+10. Security/authorization is separate from project filtering.
+11. Production features must be separated from future design proposals.
+
+## 7. Future architecture examples
+
+### Architecture Skill
+
+```text
+Knowledge
+   → Context
+   → Architecture Skill
+   → diagram/design output
+```
+
+현재 AI-Hub가 Architecture Skill이나 diagram generator를 runtime으로
+제공한다는 뜻이 아니다. Skill은 검색된 근거와 provenance를 사용해
+설계 산출물을 만들 수 있는 future host-side capability다.
+
+### Session Memory
+
+```text
+Agent Session
+   → execution summary
+   → project memory
+   → next session context
+```
+
+이 흐름은 future handoff 설계 예시다. 현재 session memory 저장,
+자동 요약, 복원은 구현된 기능이 아니다.
+
+### Scientific Skill
+
+```text
+Engineering Question
+   → Scientific Skill
+   → Relevant Knowledge/Papers
+   → Calculation/Analysis
+   → Result
+```
+
+결과에는 입력, 단위, 가정, 출처, uncertainty, 재현 가능한 계산을
+포함해야 한다. 외부 논문/API 접근과 데이터 전송은 별도 정책 대상이다.
+
+### Agent workflow
+
+```text
+Plan
+   → inspect existing code
+   → decide whether change is necessary
+   → minimal change
+   → test
+   → review
+```
+
+이는 AI-Hub runtime workflow가 아니라, 향후 agent host가 따를 수 있는
+검증 중심 작업 절차의 설계 예시다.
+
+## 8. Scope boundary
+
+### 현재 AI-Hub core가 소유하는 것
+
+- Knowledge
+- Search
+- Context
+- 현재 Knowledge MCP boundary
+- REST context API
+- PostgreSQL/pgvector 기반 persistence와 retrieval
+
+### Future Agent layer
+
+- Skills
+- Workflows
+- Memory(session/project state/troubleshooting)
+- Model Providers
+- Automation
+
+### AI-Hub가 직접 소유하지 않는 외부 concern
+
+- external LLM provider implementation
+- external MCP services
+- Agent host/runtime
+- browser automation
+- external CI systems
+
+이 구분은 향후 기능을 추가할 때 core와 host/integration의 책임을
+분리하기 위한 것이다. 특히 `project_id` filtering은 authorization이
+아니며, 인증·인가 설계는 별도의 security milestone으로 다룬다.
+
+## 9. Design decisions for future work
+
+- 새로운 project는 LIMO 전용 branch나 schema가 아니라 기존 Project,
+  Document, Memory, Search, Context 계약을 통해 추가한다.
+- 새로운 agent-facing capability는 기존 canonical context와 provenance를
+  재사용하고, 검색 알고리즘을 중복 구현하지 않는다.
+- MCP tool 추가는 기존 tool compatibility, input validation, structured
+  response schema, project filtering, 실제 retrieval evidence를 함께
+  검증한 뒤 결정한다.
+- Skills와 workflows는 처음부터 AI-Hub core entity로 저장하지 않고,
+  host-side portable artifact와 명시적인 policy로 검증한다.
+- provider 또는 external automation을 추가할 때 source/query/secret/data
+  retention과 권한 범위를 문서화한다.
+- Production deployment와 future proposal의 상태를 같은 검증 문장으로
+  표현하지 않는다.
+
+## 10. Status vocabulary
+
+문서와 구현 보고에서 다음 용어를 일관되게 사용한다.
+
+- **Implemented:** 현재 committed code와 테스트가 해당 동작을 제공함.
+- **Validated:** 명시된 환경과 테스트에서 실제로 검증됨.
+- **Architecture/initial capability stage:** 일부 경계나 초기 capability는
+  있으나 full runtime layer가 아님.
+- **Future/planned:** 설계 제안이며 현재 구현되지 않음.
+- **External/unknown:** AI-Hub repository가 소유하거나 검증하지 않는
+  외부 시스템 상태.
