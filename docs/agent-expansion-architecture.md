@@ -32,9 +32,12 @@ runner, provider abstraction, OCR, HWP/HWPX ingestion, web UI는 현재
 구현된 기능으로 취급하지 않는다.
 
 `get_context`는 `dc0e09d`에 포함된 committed MCP capability다. 이후의
-local uncommitted 변경은 이 문서의 구현 완료 목록에 포함하지 않는다.
-실제 구현 상태는 repository의 committed code와 관련 테스트를 기준으로
-다시 확인해야 한다.
+local uncommitted 변경은 committed baseline의 구현 완료 목록과 구분한다.
+현재 working tree에는 `AuthorizationContext`와
+`require_project_access()`를 REST/MCP 경계에 연결하는 M2 작업이 있을 수
+있지만, 이는 commit 전 local state이며 `dc0e09d`의 baseline 기능으로
+표현하지 않는다. 실제 구현 상태는 repository의 committed code와 관련
+테스트를 기준으로 다시 확인해야 한다.
 
 과거 조사 시점의 checkout, commit, remote verification, working tree
 상태는 현재 baseline의 사실로 사용하지 않는다. 특히 `docs/architecture.md`
@@ -94,7 +97,7 @@ AI-Hub
 ├── Skills
 ├── Workflows
 ├── Memory
-└── Model Providers
+└── Model & Routing
 ```
 
 ### Knowledge
@@ -168,23 +171,46 @@ Memory는 현재 구현된 project/memory 데이터와 future agent state를
 
 - session memory
 - project state
+- decision history
 - troubleshooting history
 - future handoff/state
 
 현재 Memory entity가 session runtime memory나 자동 handoff system을
-의미하지는 않는다. retention, correction, deletion, provenance 정책을
-먼저 정의한 뒤 별도 milestone으로 설계한다.
+의미하지는 않는다. Session Memory는 External Agent가 소유하고,
+AI-Hub Knowledge Memory로의 promotion은 승인, provenance, project scope를
+거친 경우에만 허용하는 future contract다.
 
-### Model Providers
+```text
+Session
+   ↓
+Summary / Important State
+   ↓
+Project Memory
+   ↓
+Next Session
+```
 
-Model Provider 계층은 특정 vendor/model에 종속되지 않는 future abstraction
+Session summary, handoff, decision history와 troubleshooting fact는
+자동으로 Knowledge Memory가 되지 않는다. retention, correction, deletion,
+provenance 정책을 먼저 정의한 뒤 별도 milestone으로 설계한다.
+
+### Model & Routing
+
+Model과 routing 계층은 특정 vendor/model에 종속되지 않는 future abstraction
 이다.
 
+- Router
+  - General Router
+  - Project-specific Router
 - General LLM
 - Coding Model
 - Vision Model
 - Speech Model
 - Structured / Classification Model
+
+Router의 핵심 질문은 “이 문제를 누가 처리해야 하는가?”이다. Routing은
+AI-Hub Knowledge를 대체하지 않으며, 적절한 model, context capability,
+domain skill 또는 workflow로 요청을 전달하는 future coordination layer다.
 
 Provider-specific authentication, pricing, retention, latency, benchmark,
 failure behavior는 provider boundary 뒤에 둔다. AI-Hub core가 특정
@@ -342,6 +368,63 @@ mode를 별도로 확인한다.
 > hallucination rate 및 benchmark 결과는 별도의 검증이 필요하며 현재
 > AI-Hub 구현의 요구사항이나 사실로 취급하지 않는다.
 
+### Router와 Model 선택 예시
+
+```text
+User Request
+     ↓
+   Router
+     │
+     ├─ Simple classification → Small Model
+     ├─ Document/knowledge task → AI-Hub Context
+     ├─ Coding → Coding Model
+     ├─ Complex reasoning → Reasoning LLM
+     └─ Domain-specific task → Domain Skill
+```
+
+Router는 Knowledge source of truth가 아니며, 실제 선택 결과와 품질은
+별도 evaluation contract로 검증해야 한다.
+
+### LIMO architecture illustration
+
+```text
+LiDAR / Camera
+      ↓
+Structured Model
+      ↓
+{
+  obstacle: true,
+  confidence: 0.97,
+  distance: 0.82,
+  urgency: 0.91
+}
+      ↓
+Navigation / Avoidance
+```
+
+위 숫자는 architecture illustration일 뿐이며 실제 benchmark, 정확도,
+안전성 또는 inference rate를 의미하지 않는다.
+
+### Long-term Router learning direction
+
+```text
+Request
+ ↓
+Router
+ ↓
+Actual result
+ ↓
+User correction / follow-up
+ ↓
+Training / Evaluation Data
+ ↓
+Project-specific Router
+```
+
+이 흐름은 Project-specific Router를 장기적으로 평가·개선할 수 있다는
+연구 방향만 나타낸다. Online learning, training pipeline, feedback DB는
+현재 구현하지 않는다.
+
 ## 5. M0–M5 future roadmap
 
 각 milestone은 target architecture다. 상태는 현재 committed repository
@@ -368,19 +451,21 @@ PostgreSQL 17 + pgvector E2E가 구현·검증되어 있다. 추가적인 MCP ca
 - Policy
 - Hooks
 
-**현재 상태:** architecture/initial capability stage.
+**현재 상태:** current development/design stage.
 저장소의 agent workflow 문서는 coding/change policy이며, 이것만으로
 runtime skill registry, workflow executor, hook system이 구현된 것은 아니다.
 첫 단계는 read-only context 사용과 검증 절차를 host-side에서 정의하는
-것이다.
+것이다. `get_context`와 Authorization Guard는 agent-facing 경계의 초기
+capability로 다루되, full Agent runtime으로 해석하지 않는다.
 
 ### M2 — Memory
 
 - Session
 - Project State
+- Decision History
 - Troubleshooting
 
-**현재 상태:** future/planned.
+**현재 상태:** architecture/contract defined, implementation future.
 현재 Memory entity와 session/handoff/project-state runtime을 혼동하지
 않는다. retention과 correction 정책을 포함한 별도 설계가 필요하다.
 
@@ -390,7 +475,7 @@ M2에 들어가기 전에 다음 dependency를 고정해야 한다.
   분리한다.
 - `get_context`의 canonical item/source와 provenance 의미를 유지한다.
 - `project_id` filtering을 authorization으로 승격하지 않으며, 별도
-  authorization contract가 필요하면 Open Decision으로 남긴다.
+  authorization contract와 요청 경계를 분리한다.
 - session summary, project state, troubleshooting과 handoff의 write
   approval, retention, correction, deletion 정책을 정의한다.
 - Hook이 session memory를 자동 기록할 수 있는지와 그 승인 기준을
@@ -402,28 +487,63 @@ multi-agent shared memory와 provider-specific memory behavior는 M2의
 
 ### M3 — Domain Intelligence
 
-- Robotics
-- Engineering
 - Scientific
-- Medical
+- Engineering
+- Robotics
+- Control
+- Other Domains
 
 **현재 상태:** future/planned.
-도메인 skill은 project-agnostic core 위의 선택적 capability다. Medical
-영역은 연구/문헌 지원과 임상 판단을 명확히 분리해야 한다.
+도메인 skill은 project-agnostic core 위의 선택적 capability다.
 
-### M4 — Model Layer
+```text
+Engineering Question
+      ↓
+Engineering / Scientific Skill
+      ↓
+AI-Hub Knowledge / Relevant Sources
+      ↓
+Calculation / Analysis
+      ↓
+Result
+```
 
+LIMO/로봇 사례:
+
+```text
+Robot Joint
+   ↓
+Mechanics / Dynamics
+   ↓
+Required Torque
+   ↓
+Relevant Knowledge
+   ↓
+Engineering Skill
+```
+
+의학 등 다른 분야도 동일한 Domain Skill 구조로 확장할 수 있으나,
+실제 Scientific/Medical 활용은 별도 skill, 자료 품질, 안전성 검증이
+필요하다. 현재 구현된 기능으로 표현하지 않는다.
+
+### M4 — Model & Routing
+
+- Router
+  - General Router
+  - Project-specific Router
 - General LLM
-- Coding Models
-- Vision Models
-- Speech Models
-- Structured / Classification Models
+- Coding Model
+- Vision Model
+- Speech Model
+- Structured / Classification Model
 
-**현재 상태:** future/planned.
+**현재 상태:** future research/experimentation.
+Router는 요청을 처리할 capability/model을 선택하지만 AI-Hub Knowledge를
+대체하지 않는다. 특정 외부 model을 필수 구성요소로 채택하지 않는다.
 provider interface, evaluation set, provenance, 비용·latency·privacy
 정책이 정해지기 전에는 특정 provider를 core에 결합하지 않는다.
 
-### M5 — Automation
+### M5 — Development Automation
 
 - GitHub
 - Browser
@@ -435,21 +555,59 @@ provider interface, evaluation set, provenance, 비용·latency·privacy
 외부 시스템 connector와 자동화는 최소 권한, 승인, secret, prompt
 injection, audit 경계를 갖춘 별도 integration으로 다룬다.
 
-## 6. Agent Expansion principles
+## 6. External reference and candidate classification
+
+다음 항목은 현재 AI-Hub에 통합된 기능이 아니라 외부 reference 또는
+future candidate를 분류한 것이다.
+
+| Project / Feature | AI-Hub role | Stage |
+|---|---|---|
+| Archify Diagram Skill | M1 candidate | External reference |
+| Ponytail Minimal Coding Workflow | M1 | Agent workflow reference |
+| ECC Agent Harness / Workflow | M1 | External reference |
+| Scientific Agent Skills | M3 | Scientific / Engineering skill reference |
+| Claude Map 계열 | M2 | Session Memory reference |
+| MCP Official Skills | M1 | MCP development reference |
+| GitHub MCP | M5 | GitHub tool reference |
+| Chrome DevTools MCP | M5 | Browser / Debug tool reference |
+| Copilot `/af` | M1 | Skill / MCP discovery reference |
+| Jev 계열 | M4 | Structured / Router model concept |
+| Laya | M4 | Local / open-source Router candidate |
+| GitHub Actions | M5 | CI / Automation reference |
+| Dependabot | M5 | Dependency management reference |
+| CodeQL | M5 | Security reference |
+
+Jev 계열과 Laya에 대해 외부 영상·제작자가 제시한 program-oriented
+output, classification/decision, probability/confidence, local execution,
+custom training, fast inference 또는 privacy-oriented deployment 설명은
+architecture 관점의 reference candidate로만 기록한다.
+
+정확한 성능 수치, 특정 모델보다 몇 배 저렴하다는 주장, hallucination zero,
+특정 TPS/inference rate, 특정 모델보다 정확하다는 주장은 현재 AI-Hub
+사실이나 요구사항으로 채택하지 않는다.
+
+> 외부 영상/제작자가 제시한 모델 성능·가격·hallucination·정확도 수치는
+> 별도 검증 대상이며 현재 AI-Hub architecture의 사실이나 요구사항으로
+> 채택하지 않는다.
+
+## 7. Agent Expansion principles
 
 1. AI-Hub core remains project-agnostic.
 2. LIMO is a project/use case, not the platform boundary.
 3. Agent execution remains separate from knowledge infrastructure.
 4. Skills are reusable capabilities, not core data entities.
 5. MCP is an access/integration boundary, not the agent runtime itself.
-6. Model Providers are replaceable infrastructure.
+6. Model providers and routing policies are replaceable infrastructure.
 7. Generative and structured inference can coexist.
 8. Structured model output should be machine-consumable.
 9. Model/vendor-specific behavior must stay behind provider boundaries.
 10. Security/authorization is separate from project filtering.
-11. Production features must be separated from future design proposals.
+11. Router selects a handling capability; it does not replace Knowledge.
+12. External model claims require independent verification before becoming
+    architecture requirements.
+13. Production features must be separated from future design proposals.
 
-## 7. Future architecture examples
+## 8. Future architecture examples
 
 ### Architecture Skill
 
@@ -503,7 +661,7 @@ Plan
 이는 AI-Hub runtime workflow가 아니라, 향후 agent host가 따를 수 있는
 검증 중심 작업 절차의 설계 예시다.
 
-## 8. Scope boundary
+## 9. Scope boundary
 
 ### 현재 AI-Hub core가 소유하는 것
 
@@ -519,7 +677,7 @@ Plan
 - Skills
 - Workflows
 - Memory(session/project state/troubleshooting)
-- Model Providers
+- Model & Routing
 - Automation
 
 ### AI-Hub가 직접 소유하지 않는 외부 concern
@@ -534,7 +692,7 @@ Plan
 분리하기 위한 것이다. 특히 `project_id` filtering은 authorization이
 아니며, 인증·인가 설계는 별도의 security milestone으로 다룬다.
 
-## 9. Design decisions for future work
+## 10. Design decisions for future work
 
 - 새로운 project는 LIMO 전용 branch나 schema가 아니라 기존 Project,
   Document, Memory, Search, Context 계약을 통해 추가한다.
@@ -550,7 +708,7 @@ Plan
 - Production deployment와 future proposal의 상태를 같은 검증 문장으로
   표현하지 않는다.
 
-## 10. Status vocabulary
+## 11. Status vocabulary
 
 문서와 구현 보고에서 다음 용어를 일관되게 사용한다.
 
