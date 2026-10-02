@@ -17,6 +17,7 @@ from app.core.context_assembly import (
     CanonicalContext,
     assemble_canonical_context,
 )
+from app.core.authorization import require_mcp_project_access
 from app.core.documents import get_document as fetch_document
 from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
@@ -305,6 +306,8 @@ def search_context(
     project_id: int | None = None,
 ) -> SearchContextResponse:
     """Search AI-Hub memories and indexed documents together."""
+    require_mcp_project_access(operation="read", project_id=project_id)
+
     if not query.strip():
         raise ValueError("query must not be empty")
 
@@ -326,6 +329,8 @@ def get_context(
     project_id: int | None = None,
 ) -> CanonicalContext:
     """Assemble project-scoped canonical context for an AI agent."""
+    require_mcp_project_access(operation="read", project_id=project_id)
+
     if not query.strip():
         raise ValueError("query must not be empty")
 
@@ -341,6 +346,8 @@ def get_context(
 @mcp.tool()
 def list_projects() -> ListProjectsResponse:
     """List AI-Hub projects and their memory counts."""
+    require_mcp_project_access(operation="read", project_id=None)
+
     result = fetch_projects()
     return ListProjectsResponse.model_validate(result)
 
@@ -348,6 +355,8 @@ def list_projects() -> ListProjectsResponse:
 @mcp.tool()
 def get_document(document_id: int) -> GetDocumentResponse:
     """Get metadata for one AI-Hub document."""
+    require_mcp_project_access(operation="read", project_id=None)
+
     result = fetch_document(document_id)
 
     if result is None:

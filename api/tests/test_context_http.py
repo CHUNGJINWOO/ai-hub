@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.core.authorization import AuthorizationContext
 from app.main import app
 from app.routers import context as context_router
 
@@ -59,7 +60,13 @@ SEARCH_RESPONSE = {
 
 class ContextAssemblyHttpTests(unittest.TestCase):
     def client(self):
-        return TestClient(app)
+        client = TestClient(app)
+        client.app_state["authorization_context"] = AuthorizationContext(
+            identity="test-agent",
+            allowed_project_ids=frozenset({2}),
+            allow_global_read=True,
+        )
+        return client
 
     def test_assemble_http_wiring_serializes_response_and_forwards_params(self):
         with (
@@ -100,6 +107,21 @@ class ContextAssemblyHttpTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], "Query must not be empty")
+        build_context.assert_not_called()
+
+    def test_assemble_http_rejects_missing_authorization_context(self):
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch.object(context_router, "build_context") as build_context,
+        ):
+            with TestClient(app) as client:
+                response = client.get(
+                    "/context/assemble",
+                    params={"q": "cmd_vel publisher", "project_id": 2},
+                )
+
+        self.assertEqual(response.status_code, 403)
         build_context.assert_not_called()
 
     def test_search_http_wiring_preserves_legacy_response_shape(self):

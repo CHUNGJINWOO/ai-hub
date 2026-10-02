@@ -1,9 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from pgvector import Vector
 
 from app.core.db import get_db_connection
 from app.core.embedding import model
+from app.core.authorization import (
+    AuthorizationDenied,
+    require_bound_request_project_access,
+)
 
 
 router = APIRouter(
@@ -36,8 +40,14 @@ class MemoryUpdate(BaseModel):
 # -------------------------
 
 @router.post("")
-def create_memory(memory: MemoryCreate):
+def create_memory(memory: MemoryCreate, request: Request):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=memory.project_id,
+        )
+
         embedding = Vector(
             model.encode(
                 "passage: " + memory.content,
@@ -100,6 +110,9 @@ def create_memory(memory: MemoryCreate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -113,11 +126,18 @@ def list_memories(
     limit: int = 50,
     offset: int = 0,
     project_id: int | None = None,
+    request: Request = None,
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
     try:
+        require_bound_request_project_access(
+            request,
+            operation="read",
+            project_id=project_id,
+        )
+
         with get_db_connection() as conn:
             if project_id is not None:
                 rows = conn.execute(
@@ -180,6 +200,9 @@ def list_memories(
             ],
         }
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -193,8 +216,15 @@ def search_memories(
     q: str,
     limit: int = 5,
     project_id: int | None = None,
+    request: Request = None,
 ):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="read",
+            project_id=project_id,
+        )
+
         limit = max(1, min(limit, 20))
 
         query_embedding = Vector(
@@ -280,9 +310,31 @@ def search_memories(
 # -------------------------
 
 @router.get("/{memory_id}")
-def get_memory(memory_id: int):
+def get_memory(memory_id: int, request: Request = None):
     try:
         with get_db_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    project_id
+                FROM memories
+                WHERE id = %s;
+                """,
+                (memory_id,),
+            ).fetchone()
+
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Memory not found",
+                )
+
+            require_bound_request_project_access(
+                request,
+                operation="read",
+                project_id=row[0],
+            )
+
             row = conn.execute(
                 """
                 SELECT
@@ -324,6 +376,9 @@ def get_memory(memory_id: int):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -333,7 +388,11 @@ def get_memory(memory_id: int):
 # -------------------------
 
 @router.patch("/{memory_id}")
-def update_memory(memory_id: int, memory: MemoryUpdate):
+def update_memory(
+    memory_id: int,
+    memory: MemoryUpdate,
+    request: Request = None,
+):
     try:
         with get_db_connection() as conn:
             current = conn.execute(
@@ -356,6 +415,21 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
                     status_code=404,
                     detail="Memory not found",
                 )
+
+            effective_project_id = (
+                memory.project_id
+                if "project_id" in (
+                    memory.model_fields_set
+                    if hasattr(memory, "model_fields_set")
+                    else memory.__fields_set__
+                )
+                else current[5]
+            )
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=effective_project_id,
+            )
 
             content = (
                 memory.content
@@ -473,6 +547,9 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -482,9 +559,30 @@ def update_memory(memory_id: int, memory: MemoryUpdate):
 # -------------------------
 
 @router.delete("/{memory_id}")
-def delete_memory(memory_id: int):
+def delete_memory(memory_id: int, request: Request = None):
     try:
         with get_db_connection() as conn:
+            project = conn.execute(
+                """
+                SELECT project_id
+                FROM memories
+                WHERE id = %s;
+                """,
+                (memory_id,),
+            ).fetchone()
+
+            if project is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Memory not found",
+                )
+
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=project[0],
+            )
+
             row = conn.execute(
                 """
                 DELETE FROM memories
@@ -509,6 +607,9 @@ def delete_memory(memory_id: int):
 
     except HTTPException:
         raise
+
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

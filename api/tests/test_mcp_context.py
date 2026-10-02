@@ -6,10 +6,21 @@ from unittest.mock import patch
 os.environ.setdefault("MCP_ACCESS_TOKEN", "test-only-mcp-token")
 
 from app.core.context_assembly import CanonicalContext
+from app.core.authorization import (
+    AuthorizationContext,
+    mcp_authorization_context,
+)
 from app.mcp_server import get_context, mcp
 
 
 class McpContextContractTests(unittest.TestCase):
+    def setUp(self):
+        self.authorization_context = AuthorizationContext(
+            identity="test-agent",
+            allowed_project_ids=frozenset({7}),
+            allow_global_read=True,
+        )
+
     def test_registers_get_context_without_changing_existing_tools(self):
         tools = asyncio.run(mcp.list_tools())
 
@@ -48,8 +59,21 @@ class McpContextContractTests(unittest.TestCase):
         )
 
     def test_rejects_empty_query(self):
-        with self.assertRaisesRegex(ValueError, "must not be empty"):
-            get_context("  ")
+        with mcp_authorization_context(self.authorization_context):
+            with self.assertRaisesRegex(ValueError, "must not be empty"):
+                get_context("  ")
+
+    def test_rejects_missing_authorization_before_core_call(self):
+        with patch(
+            "app.mcp_server.assemble_canonical_context",
+        ) as assemble:
+            with self.assertRaisesRegex(
+                PermissionError,
+                "authorization context is not available",
+            ):
+                get_context("publisher", project_id=7)
+
+        assemble.assert_not_called()
 
     def test_forwards_project_and_clamped_limit_to_canonical_capability(self):
         canonical = CanonicalContext(
@@ -61,15 +85,16 @@ class McpContextContractTests(unittest.TestCase):
             sources=[],
         )
 
-        with patch(
-            "app.mcp_server.assemble_canonical_context",
-            return_value=canonical,
-        ) as assemble:
-            result = get_context(
-                query="publisher",
-                limit=100,
-                project_id=7,
-            )
+        with mcp_authorization_context(self.authorization_context):
+            with patch(
+                "app.mcp_server.assemble_canonical_context",
+                return_value=canonical,
+            ) as assemble:
+                result = get_context(
+                    query="publisher",
+                    limit=100,
+                    project_id=7,
+                )
 
         self.assertIs(result, canonical)
         assemble.assert_called_once_with(
@@ -103,11 +128,12 @@ class McpContextContractTests(unittest.TestCase):
             ],
         )
 
-        with patch(
-            "app.mcp_server.assemble_canonical_context",
-            return_value=canonical,
-        ):
-            result = get_context("publisher", project_id=7)
+        with mcp_authorization_context(self.authorization_context):
+            with patch(
+                "app.mcp_server.assemble_canonical_context",
+                return_value=canonical,
+            ):
+                result = get_context("publisher", project_id=7)
 
         payload = result.model_dump()
         self.assertEqual(payload["context_schema_version"], "1")
@@ -130,16 +156,17 @@ class McpContextContractTests(unittest.TestCase):
             "sources": [],
         }
 
-        with patch(
-            "app.mcp_server.assemble_canonical_context",
-            return_value=CanonicalContext.model_validate(canonical),
-        ):
-            result = asyncio.run(
-                mcp.call_tool(
-                    "get_context",
-                    {"query": "publisher", "project_id": 7},
+        with mcp_authorization_context(self.authorization_context):
+            with patch(
+                "app.mcp_server.assemble_canonical_context",
+                return_value=CanonicalContext.model_validate(canonical),
+            ):
+                result = asyncio.run(
+                    mcp.call_tool(
+                        "get_context",
+                        {"query": "publisher", "project_id": 7},
+                    )
                 )
-            )
 
         self.assertFalse(result.is_error)
         self.assertEqual(result.structured_content, canonical)
