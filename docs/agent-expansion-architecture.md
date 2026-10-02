@@ -1,7 +1,7 @@
 # AI-Hub Agent Expansion Future Architecture / Design Proposal
 
 **문서 성격:** 미래 아키텍처 및 설계 제안
-**기준 repository baseline:** `9ff0a9d` (`main`)
+**기준 repository baseline:** `dc0e09d` (`main`)
 **기준일:** 2026-10-02
 
 이 문서는 현재 AI-Hub에 구현된 Knowledge Hub/MCP 기반과 향후 Agent
@@ -10,7 +10,7 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 
 ## 1. 현재 baseline과 문서화 원칙
 
-`9ff0a9d` 기준으로 현재 repository에는 다음 기반이 구현되어 있다.
+`dc0e09d` 기준으로 현재 repository에는 다음 기반이 구현되어 있다.
 
 - Project
 - Memory
@@ -21,7 +21,8 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 - canonical Context Assembly와 provenance
 - REST `GET /context/search`
 - REST `GET /context/assemble`
-- MCP tools: `health_check`, `search_context`, `list_projects`, `get_document`
+- MCP tools: `health_check`, `search_context`, `list_projects`, `get_document`,
+  `get_context`
 - FastAPI Context Assembly HTTP integration tests
 - disposable PostgreSQL 17 + pgvector Context Assembly E2E validation
 
@@ -30,9 +31,10 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 runner, provider abstraction, OCR, HWP/HWPX ingestion, web UI는 현재
 구현된 기능으로 취급하지 않는다.
 
-`get_context` MCP capability처럼 baseline commit 이후의 local uncommitted
-변경은 이 문서의 구현 완료 목록에 포함하지 않는다. 실제 구현 상태는
-repository의 committed code와 관련 테스트를 기준으로 다시 확인해야 한다.
+`get_context`는 `dc0e09d`에 포함된 committed MCP capability다. 이후의
+local uncommitted 변경은 이 문서의 구현 완료 목록에 포함하지 않는다.
+실제 구현 상태는 repository의 committed code와 관련 테스트를 기준으로
+다시 확인해야 한다.
 
 과거 조사 시점의 checkout, commit, remote verification, working tree
 상태는 현재 baseline의 사실로 사용하지 않는다. 특히 `docs/architecture.md`
@@ -75,8 +77,9 @@ AI / Agent clients
   답변을 생성하지 않는다.
 - **REST:** 현재 `/context/search`와 `/context/assemble`를 외부 HTTP
   consumer에 제공한다.
-- **MCP:** 현재 네 개의 Knowledge access tool을 Streamable HTTP 경계로
-  제공한다. MCP는 agent runtime이 아니다.
+- **MCP:** 현재 다섯 개의 Knowledge access tool을 Streamable HTTP 경계로
+  제공한다: `health_check`, `search_context`, `list_projects`,
+  `get_document`, `get_context`. MCP는 agent runtime이 아니다.
 - **AI/Agent:** 현재 AI-Hub core가 소유하는 runtime 계층이 아니다. 외부
   agent host가 REST/MCP를 통해 지식과 context를 소비하는 구조를 전제로 한다.
 
@@ -187,6 +190,94 @@ Provider-specific authentication, pricing, retention, latency, benchmark,
 failure behavior는 provider boundary 뒤에 둔다. AI-Hub core가 특정
 vendor/model을 기본 요구사항으로 갖지 않도록 한다.
 
+### M1 Agent Layer contract boundary
+
+M1의 contract는 AI-Hub가 Agent runtime을 구현한다는 뜻이 아니다.
+AI-Hub는 Knowledge와 Context를 제공하고, External Agent가 Skill 선택,
+workflow 실행, policy enforcement, hook lifecycle을 소유한다.
+
+#### 현재 상태
+
+| Layer | 현재 상태 | 책임 owner |
+|---|---|---|
+| Skill | runtime 미구현. 재사용 가능한 절차와 도메인 지식의 future artifact로만 정의 | External Agent |
+| Workflow | runtime 미구현. 작업 순서와 checkpoint를 정의하는 future contract | External Agent |
+| Policy | 기존 MCP 인증, project filtering, compatibility/data-safety 정책은 존재하지만 Agent policy engine은 미구현 | Shared |
+| Hook | runtime 미구현. lifecycle callback과 audit 연결은 future contract | External Agent |
+
+`docs/AI_AGENT_WORKFLOW.md`는 repository 변경 지침 문서이며 Skill loader,
+Workflow executor, Policy engine, Hook registry 또는 Agent runner가 아니다.
+
+#### Skill Contract
+
+- **Purpose:** 특정 작업에 필요한 재사용 가능한 절차, 도메인 지식, 검증
+  규칙을 정의한다.
+- **Inputs:** 작업 질문, 명시된 project scope, 필요한 context 요청,
+  사용자가 제공한 제약과 승인 상태.
+- **AI-Hub capabilities used:** `get_context`, 필요 시 `search_context`,
+  `list_projects`, `get_document`, REST context API. Skill은 검색 알고리즘과
+  canonical context semantics를 복제하지 않는다.
+- **Outputs:** 구조화된 작업 결과, 사용한 source/provenance, 검증 결과,
+  미해결 사항과 다음 action.
+- **Validation:** 입력 project scope와 권한을 확인하고, context source를
+  결과에 연결하며, 필요한 테스트와 정책 검증을 통과해야 한다.
+
+Skill artifact의 저장 형식, discovery 방식, versioning, 실행 host는
+아직 정하지 않는다.
+
+#### Workflow Contract
+
+External Agent workflow는 다음 단계를 논리적 순서로 제공한다.
+
+1. **Inspect:** repository, project scope, 기존 구현과 제약을 확인한다.
+2. **Context retrieval:** AI-Hub context/search capability에서 필요한
+   근거와 provenance를 조회한다.
+3. **Planning:** 변경 필요성, 최소 범위, 예상 검증을 계획한다.
+4. **Approval:** policy에 따라 read-only인지, write/production 접근이
+   필요한지 확인하고 필요한 승인을 받는다.
+5. **Execution:** 승인된 범위에서만 외부 repository, tool, model을
+   사용한다.
+6. **Test/review:** 테스트, diff, provenance, scope와 결과를 검토하고
+   handoff 가능한 요약을 만든다.
+
+Workflow state model, retry semantics, cancellation, persistence, 실행
+host는 Open Decision이다.
+
+#### Policy Contract
+
+- **Project scope:** 요청과 context retrieval에 project 범위를 명시한다.
+  `project_id` filtering은 authorization이 아니라 data filtering이다.
+- **Read/write permission:** Knowledge read, repository read, repository
+  write, external tool write를 구분한다. 기본 write 허용 여부는 정하지
+  않는다.
+- **Production restriction:** production DB, production container,
+  deployment와 destructive operation은 명시적 scope와 승인 없이는
+  허용하지 않는다.
+- **Approval requirement:** code write, migration, external side effect,
+  secret access와 같은 작업의 승인 기준은 host policy가 적용한다.
+- **Secret/data boundary:** credentials, private source, query, context,
+  model input의 외부 전송 범위와 보존은 provider/integration별로
+  제한한다. 실제 secret을 context나 문서에 기록하지 않는다.
+
+project authorization mapping, approval actor, policy format, policy
+precedence와 enforcement location은 Open Decision이다.
+
+#### Hook Contract
+
+Hook은 External Agent workflow lifecycle에 연결되는 future signal이다.
+
+- **Pre-step:** 단계 실행 전 scope, input, policy와 approval을 확인한다.
+- **Post-step:** 결과, provenance, output shape와 검증 상태를 기록한다.
+- **Failure:** 예외, policy violation, timeout을 표준 failure signal로
+  전달하고 partial side effect를 보고한다.
+- **Approval gate:** write, production, external side effect 전에 workflow를
+  멈추고 승인 결과를 요구한다.
+- **Audit signal:** actor, project scope, capability, action, result와
+  timestamp를 audit 대상 event로 표현한다.
+
+Hook transport, event schema, ordering, retry와 audit storage owner는
+Open Decision이다.
+
 ## 4. Generative LLM과 Structured Model의 경계
 
 ```text
@@ -266,7 +357,7 @@ mode를 별도로 확인한다.
 
 **현재 상태:** largely implemented.
 Project/Memory/Document/DocumentChunk, unified search, canonical Context
-Assembly, REST context routes, 현재 MCP 네 개 tool, HTTP integration 및
+Assembly, REST context routes, 현재 MCP 다섯 개 tool, HTTP integration 및
 PostgreSQL 17 + pgvector E2E가 구현·검증되어 있다. 추가적인 MCP capability는
 별도 변경으로 다룬다.
 
@@ -292,6 +383,22 @@ runtime skill registry, workflow executor, hook system이 구현된 것은 아�
 **현재 상태:** future/planned.
 현재 Memory entity와 session/handoff/project-state runtime을 혼동하지
 않는다. retention과 correction 정책을 포함한 별도 설계가 필요하다.
+
+M2에 들어가기 전에 다음 dependency를 고정해야 한다.
+
+- AI-Hub Knowledge Memory와 Agent Session Memory의 owner와 저장 경계를
+  분리한다.
+- `get_context`의 canonical item/source와 provenance 의미를 유지한다.
+- `project_id` filtering을 authorization으로 승격하지 않으며, 별도
+  authorization contract가 필요하면 Open Decision으로 남긴다.
+- session summary, project state, troubleshooting과 handoff의 write
+  approval, retention, correction, deletion 정책을 정의한다.
+- Hook이 session memory를 자동 기록할 수 있는지와 그 승인 기준을
+  결정한다.
+
+Session schema, automatic summarization, handoff generation, memory ranking,
+multi-agent shared memory와 provider-specific memory behavior는 M2의
+별도 설계로 남긴다.
 
 ### M3 — Domain Intelligence
 
