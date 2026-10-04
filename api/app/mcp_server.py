@@ -9,18 +9,27 @@ from jwt import PyJWKClient
 from pydantic import AnyHttpUrl, BaseModel
 
 from mcp.server import MCPServer
-from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.context import CallNext, HandlerResult, ServerMiddleware
+from mcp.server.context import ServerRequestContext
 from mcp.server.transport_security import TransportSecuritySettings
 
 from app.core.context_assembly import (
     CanonicalContext,
     assemble_canonical_context,
 )
-from app.core.authorization import require_mcp_project_access
+from app.core.authorization import (
+    AuthorizationContext,
+    AuthorizationDenied,
+    mcp_authorization_context,
+    require_mcp_project_access,
+)
 from app.core.documents import get_document as fetch_document
 from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
+from app.skills import list_skill_descriptors
 
 MCP_RESOURCE_URL = os.getenv(
     "MCP_RESOURCE_URL",
@@ -136,6 +145,66 @@ class KeycloakJWTVerifier(TokenVerifier):
 
         except Exception:
             return None
+
+
+def _authorization_context_from_access_token(
+    access_token: AccessToken,
+) -> AuthorizationContext:
+    """Translate verified token claims into the existing auth contract."""
+    claims = access_token.claims or {}
+    identity = access_token.subject or access_token.client_id
+    if not identity:
+        raise AuthorizationDenied(
+            "authenticated token does not contain a principal"
+        )
+
+    raw_project_ids = claims.get("allowed_project_ids", ())
+    if not isinstance(raw_project_ids, (list, tuple, set, frozenset)):
+        raise AuthorizationDenied(
+            "authenticated token contains invalid project permissions"
+        )
+
+    try:
+        allowed_project_ids = frozenset(
+            int(project_id) for project_id in raw_project_ids
+        )
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationDenied(
+            "authenticated token contains invalid project permissions"
+        ) from exc
+
+    auth_method = claims.get("auth_method")
+    allow_global_read = (
+        auth_method == "static_api_key"
+        or claims.get("allow_global_read") is True
+    )
+    allow_write = claims.get("allow_write") is True
+
+    return AuthorizationContext(
+        identity=str(identity),
+        allowed_project_ids=allowed_project_ids,
+        allow_global_read=allow_global_read,
+        allow_write=allow_write,
+    )
+
+
+class MCPAuthorizationContextMiddleware(ServerMiddleware[Any]):
+    """Bind the verified MCP principal to the existing auth guard context."""
+
+    async def __call__(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        call_next: CallNext,
+    ) -> HandlerResult:
+        access_token = get_access_token()
+        if access_token is None:
+            return await call_next(ctx)
+
+        authorization_context = _authorization_context_from_access_token(
+            access_token
+        )
+        with mcp_authorization_context(authorization_context):
+            return await call_next(ctx)
 
 
 class HealthCheckMiddleware:
@@ -273,6 +342,24 @@ class GetDocumentResponse(BaseModel):
     updated_at: datetime
     chunk_count: int
 
+
+class SkillDescriptorResponse(BaseModel):
+    skill_id: str
+    name: str
+    purpose: str
+    domains: list[str]
+    task_types: list[str]
+    required_context: list[str]
+    input_schema: str
+    output_schema: str
+    evidence_type: str
+    project_scope: str
+
+
+class ListSkillsResponse(BaseModel):
+    skills: list[SkillDescriptorResponse]
+
+
 mcp = MCPServer(
     "AI-Hub",
     token_verifier=KeycloakJWTVerifier(
@@ -287,6 +374,7 @@ mcp = MCPServer(
         required_scopes=[REQUIRED_SCOPE],
         validate_token_resource=True,
     ),
+    middleware=[MCPAuthorizationContextMiddleware()],
 )
 
 
@@ -340,6 +428,31 @@ def get_context(
         query=query,
         limit=limit,
         project_id=project_id,
+    )
+
+
+@mcp.tool()
+def list_skills() -> ListSkillsResponse:
+    """List available skill capability metadata."""
+    require_mcp_project_access(operation="read", project_id=None)
+
+    descriptors = list_skill_descriptors()
+    return ListSkillsResponse(
+        skills=[
+            SkillDescriptorResponse(
+                skill_id=descriptor.skill_id,
+                name=descriptor.name,
+                purpose=descriptor.purpose,
+                domains=list(descriptor.domains),
+                task_types=list(descriptor.task_types),
+                required_context=list(descriptor.required_context),
+                input_schema=descriptor.input_schema,
+                output_schema=descriptor.output_schema,
+                evidence_type=descriptor.evidence_type,
+                project_scope=descriptor.project_scope,
+            )
+            for descriptor in descriptors
+        ]
     )
 
 

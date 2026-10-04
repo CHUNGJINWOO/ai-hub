@@ -104,16 +104,18 @@ production system as an implicit part of the task.
 
 Request the smallest authorized context needed for the task. Prefer
 `get_context` for canonical items and sources; use `search_context` for
-focused or follow-up retrieval. Use `list_projects`, `get_document`, and
+focused or follow-up retrieval. Use `list_skills` to discover available capability
+descriptors without executing them. Use `list_projects`, `get_document`, and
 `health_check` only according to their current MCP meanings.
 
-The current Knowledge MCP tools are exactly:
+The repository source Knowledge MCP tools are:
 
 - `health_check`
 - `search_context`
 - `list_projects`
 - `get_document`
 - `get_context`
+- `list_skills`
 
 The Harness must not duplicate AI-Hub search, ranking, project filtering, or
 Context Assembly.

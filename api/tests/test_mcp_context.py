@@ -10,7 +10,7 @@ from app.core.authorization import (
     AuthorizationContext,
     mcp_authorization_context,
 )
-from app.mcp_server import get_context, mcp
+from app.mcp_server import get_context, list_skills, mcp
 
 
 class McpContextContractTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class McpContextContractTests(unittest.TestCase):
             allow_global_read=True,
         )
 
-    def test_registers_get_context_without_changing_existing_tools(self):
+    def test_registers_get_context_and_list_skills_while_preserving_existing_tools(self):
         tools = asyncio.run(mcp.list_tools())
 
         self.assertEqual(
@@ -32,6 +32,7 @@ class McpContextContractTests(unittest.TestCase):
                 "list_projects",
                 "get_document",
                 "get_context",
+                "list_skills",
             },
         )
         get_context_tool = next(
@@ -55,6 +56,114 @@ class McpContextContractTests(unittest.TestCase):
                 "document_count",
                 "items",
                 "sources",
+            },
+        )
+
+        list_skills_tool = next(
+            tool for tool in tools if tool.name == "list_skills"
+        )
+        self.assertEqual(
+            list_skills_tool.input_schema.get("required", []),
+            [],
+        )
+        self.assertEqual(
+            set(list_skills_tool.output_schema["properties"]),
+            {"skills"},
+        )
+
+    def test_lists_skill_metadata_with_global_read_authorization(self):
+        with mcp_authorization_context(self.authorization_context):
+            result = list_skills()
+
+        self.assertEqual(len(result.skills), 1)
+        skill = result.skills[0]
+        self.assertEqual(skill.skill_id, "ros2-robotics")
+        self.assertEqual(skill.name, "ROS2 Robotics")
+        self.assertEqual(skill.domains, ["ros2", "robotics"])
+        self.assertEqual(
+            skill.task_types,
+            [
+                "node",
+                "topic",
+                "service",
+                "action",
+                "parameter",
+                "launch",
+                "nav2",
+            ],
+        )
+        self.assertEqual(
+            skill.required_context,
+            [
+                "project-scoped canonical context",
+                "source provenance",
+                "project_id",
+            ],
+        )
+        self.assertEqual(skill.input_schema, "SkillRequest")
+        self.assertEqual(skill.output_schema, "SkillResult")
+        self.assertEqual(skill.evidence_type, "ContextItem + ContextSource")
+        self.assertEqual(skill.project_scope, "project-scoped")
+
+    def test_rejects_skill_listing_without_global_read_authorization(self):
+        authorization = AuthorizationContext(
+            identity="project-agent",
+            allowed_project_ids=frozenset({7}),
+            allow_global_read=False,
+        )
+
+        with mcp_authorization_context(authorization):
+            with self.assertRaisesRegex(
+                PermissionError,
+                "project_id is required",
+            ):
+                list_skills()
+
+    def test_rejects_skill_listing_without_authorization_context(self):
+        with self.assertRaisesRegex(
+            PermissionError,
+            "authorization context is not available",
+        ):
+            list_skills()
+
+    def test_skill_listing_does_not_retrieve_context_or_execute(self):
+        with patch("app.mcp_server.assemble_canonical_context") as assemble:
+            with patch("app.mcp_server.unified_search_context") as search:
+                with patch(
+                    "app.skills.ros2_robotics.ROS2RoboticsSkill.execute"
+                ) as execute:
+                    with mcp_authorization_context(self.authorization_context):
+                        result = list_skills()
+
+        self.assertEqual(result.skills[0].skill_id, "ros2-robotics")
+        assemble.assert_not_called()
+        search.assert_not_called()
+        execute.assert_not_called()
+
+    def test_registered_tool_serializes_skill_catalog(self):
+        with mcp_authorization_context(self.authorization_context):
+            result = asyncio.run(
+                mcp.call_tool("list_skills", {})
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(
+            result.structured_content["skills"][0]["skill_id"],
+            "ros2-robotics",
+        )
+        self.assertEqual(
+            set(result.structured_content["skills"][0]),
+            {
+                "skill_id",
+                "name",
+                "purpose",
+                "domains",
+                "task_types",
+                "required_context",
+                "input_schema",
+                "output_schema",
+                "evidence_type",
+                "project_scope",
             },
         )
 

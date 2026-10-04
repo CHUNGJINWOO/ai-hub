@@ -103,7 +103,16 @@ an MCP Context Assembly tool.
 
 ### Current MCP Tools
 
-The repository currently registers these four tools:
+The repository source registers six tools:
+
+- `health_check`
+- `search_context`
+- `get_context`
+- `list_skills`
+- `list_projects`
+- `get_document`
+
+The currently deployed runtime reflects an earlier deployment exposing four tools:
 
 - `health_check`
 - `search_context`

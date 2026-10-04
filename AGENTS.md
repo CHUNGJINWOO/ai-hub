@@ -9,11 +9,13 @@ case is searching ROS2/LIMO project material. The repository also provides
 FastAPI endpoints and a Streamable HTTP MCP service.
 
 Treat the repository and its documentation as the source of truth for what is
-implemented. The current documented MCP tools are `health_check`,
-`search_context`, `list_projects`, and `get_document`. The REST API includes
-`/context/search` and the additive `/context/assemble` endpoint. Context
-assembly normalizes retrieved search results; it does not call an LLM or
-generate answers.
+implemented. The repository source implements six MCP tools: `health_check`,
+`search_context`, `get_context`, `list_skills`, `list_projects`, and
+`get_document` (the currently deployed runtime reflects an earlier deployment
+exposing four tools: `health_check`, `search_context`, `list_projects`, and
+`get_document`). The REST API includes `/context/search` and the additive
+`/context/assemble` endpoint. Context assembly normalizes retrieved search
+results; it does not call an LLM or generate answers.
 
 Do not present planned work as existing functionality. In particular, generated
 answers, conversation context, Conversation/Provider/Agent/Multi-Agent

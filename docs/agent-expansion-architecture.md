@@ -25,7 +25,7 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 - Minimal Skill Interface
 - ROS2 Robotics Skill prototype
 - MCP tools: `health_check`, `search_context`, `list_projects`, `get_document`,
-  `get_context`
+  `get_context`, `list_skills`
 - FastAPI Context Assembly HTTP integration tests
 - disposable PostgreSQL 17 + pgvector Context Assembly E2E validation
 

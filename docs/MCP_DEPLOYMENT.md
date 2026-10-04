@@ -63,12 +63,16 @@ This configuration does not establish that the external endpoint is currently re
 
 ## 3. MCP 기능
 
-현재 repository code에 등록된 도구:
+현재 repository source에 등록된 도구 (6개):
 
 - `health_check`
 - `search_context`
+- `get_context`
+- `list_skills`
 - `list_projects`
 - `get_document`
+
+참고: 현재 배포되어 실행 중인 runtime 환경은 컨테이너 재빌드 전의 상태로 4개 도구(`health_check`, `search_context`, `list_projects`, `get_document`)만 제공한다.
 
 `health_check` reports MCP liveness. `search_context` searches memories and indexed documents together. `list_projects` returns project summaries, and `get_document` returns one document's metadata.
 
@@ -280,7 +284,8 @@ MCP accepts bearer tokens. The query-key form is a development fallback and may 
 
 ## 9. Repository State and External Availability
 
-- MCP tool registration in repository: `health_check`, `search_context`, `list_projects`, `get_document`
+- MCP tool registration in repository source: `health_check`, `search_context`, `get_context`, `list_skills`, `list_projects`, `get_document`
+- MCP deployed runtime environment: 4 tools prior to container rebuild (`health_check`, `search_context`, `list_projects`, `get_document`)
 - MCP server authentication code: API key and Keycloak JWT bearer verification
 - Historical external Inspector checks: recorded in section 7 and `docs/development-log.md`
 - Current external endpoint availability: not verified by repository contents
