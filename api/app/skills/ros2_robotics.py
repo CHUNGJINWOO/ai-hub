@@ -28,6 +28,11 @@ class ROS2RoboticsSkill(Skill):
     name: str = "ros2-robotics"
     purpose: str = "Analyze ROS2 and robotics questions using project context."
 
+    @property
+    def skill_id(self) -> str:
+        """Return the stable identity shared with the discovery descriptor."""
+        return self.name
+
     def execute(
         self,
         request: SkillRequest,

@@ -1,6 +1,7 @@
 import unittest
 
 from app.skills import SkillDescriptor, list_skill_descriptors
+from app.skills.ros2_robotics import ROS2RoboticsSkill
 
 
 class SkillDiscoveryTests(unittest.TestCase):
@@ -23,6 +24,24 @@ class SkillDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(descriptor.skill_id, "ros2-robotics")
         self.assertEqual(descriptor.domains, ("ros2", "robotics"))
+        self.assertEqual(descriptor.project_scope, "project-scoped")
+
+    def test_ros2_descriptor_matches_concrete_skill_contract(self):
+        descriptor = list_skill_descriptors()[0]
+        skill = ROS2RoboticsSkill()
+
+        self.assertEqual(descriptor.skill_id, skill.skill_id)
+        self.assertEqual(descriptor.input_schema, "SkillRequest")
+        self.assertEqual(descriptor.output_schema, "SkillResult")
+        self.assertEqual(
+            descriptor.required_context,
+            (
+                "project-scoped canonical context",
+                "source provenance",
+                "project_id",
+            ),
+        )
+        self.assertEqual(descriptor.evidence_type, "ContextItem + ContextSource")
         self.assertEqual(descriptor.project_scope, "project-scoped")
 
     def test_discovery_is_deterministic(self):
