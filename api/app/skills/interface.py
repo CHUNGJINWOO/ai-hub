@@ -12,6 +12,22 @@ SkillStatus = Literal["success", "failure", "unknown"]
 
 
 @dataclass(frozen=True)
+class SkillDescriptor:
+    """Capability metadata exposed separately from skill execution."""
+
+    skill_id: str
+    name: str
+    purpose: str
+    domains: tuple[str, ...]
+    task_types: tuple[str, ...]
+    required_context: tuple[str, ...]
+    input_schema: str
+    output_schema: str
+    evidence_type: str
+    project_scope: str
+
+
+@dataclass(frozen=True)
 class SkillRequest:
     """Input supplied by an External Agent to a skill."""
 

@@ -3,6 +3,7 @@
 from app.skills.interface import (
     ContextProvider,
     Skill,
+    SkillDescriptor,
     SkillRequest,
     SkillEvidence,
     SkillResult,
@@ -11,6 +12,7 @@ from app.skills.interface import (
 __all__ = [
     "ContextProvider",
     "Skill",
+    "SkillDescriptor",
     "SkillRequest",
     "SkillEvidence",
     "SkillResult",
