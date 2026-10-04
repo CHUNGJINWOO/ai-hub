@@ -1,7 +1,7 @@
 # AI-Hub Agent Expansion Future Architecture / Design Proposal
 
 **문서 성격:** 미래 아키텍처 및 설계 제안
-**기준 repository baseline:** `dc0e09d` (`main`)
+**기준 repository baseline:** `b05a586` (`main`)
 **기준일:** 2026-10-02
 
 이 문서는 현재 AI-Hub에 구현된 Knowledge Hub/MCP 기반과 향후 Agent
@@ -10,7 +10,7 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 
 ## 1. 현재 baseline과 문서화 원칙
 
-`dc0e09d` 기준으로 현재 repository에는 다음 기반이 구현되어 있다.
+`b05a586` 기준으로 현재 repository에는 다음 기반이 구현되어 있다.
 
 - Project
 - Memory
@@ -21,6 +21,9 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 - canonical Context Assembly와 provenance
 - REST `GET /context/search`
 - REST `GET /context/assemble`
+- request-boundary Authorization Guard
+- Minimal Skill Interface
+- ROS2 Robotics Skill prototype
 - MCP tools: `health_check`, `search_context`, `list_projects`, `get_document`,
   `get_context`
 - FastAPI Context Assembly HTTP integration tests
@@ -31,13 +34,12 @@ Expansion 방향을 구분해 기록한다. 아래의 future, planned, proposal 
 runner, provider abstraction, OCR, HWP/HWPX ingestion, web UI는 현재
 구현된 기능으로 취급하지 않는다.
 
-`get_context`는 `dc0e09d`에 포함된 committed MCP capability다. 이후의
-local uncommitted 변경은 committed baseline의 구현 완료 목록과 구분한다.
-현재 working tree에는 `AuthorizationContext`와
-`require_project_access()`를 REST/MCP 경계에 연결하는 M2 작업이 있을 수
-있지만, 이는 commit 전 local state이며 `dc0e09d`의 baseline 기능으로
-표현하지 않는다. 실제 구현 상태는 repository의 committed code와 관련
-테스트를 기준으로 다시 확인해야 한다.
+`get_context`, Authorization Guard, Minimal Skill Interface와 ROS2
+Robotics Skill prototype은 `b05a586`까지의 committed capability다.
+이후의 local uncommitted 문서는 committed baseline의 구현 완료 목록과
+구분한다. `AuthorizationContext`는 project filtering과 분리된
+request-boundary capability이며, Skill prototype은 이를 통과한 뒤
+`CanonicalContext`와 provenance를 소비한다.
 
 과거 조사 시점의 checkout, commit, remote verification, working tree
 상태는 현재 baseline의 사실로 사용하지 않는다. 특히 `docs/architecture.md`
@@ -94,7 +96,10 @@ AI-Hub
 ├── Knowledge
 ├── Context
 ├── MCP / Tools
-├── Skills
+├── Agent Support
+│   ├── Skill / Workflow / Policy / Hook contracts
+│   ├── Harness / Agent Contract
+│   └── future discovery support
 ├── Workflows
 ├── Memory
 └── Model & Routing
@@ -139,17 +144,108 @@ GitHub/browser MCP는 현재 AI-Hub core의 구현이 아니다. MCP는 도구 �
 
 ### Skills
 
-Skills는 재사용 가능한 절차·도메인 지식·검증 규칙을 표현하는 future
-agent-side capability다.
+Skills는 재사용 가능한 절차·도메인 지식·검증 규칙을 표현하는
+agent-side capability다. 현재는 Minimal Skill Interface와 ROS2 Robotics
+Skill prototype이 초기 capability로 구현되어 있지만, Skill Runtime이나
+Registry가 구현된 것은 아니다.
 
 - Architecture
+- Planning
+- Debugging
+- Testing
+- Documentation
+- Security
 - Robotics
+- ROS2
+- LIMO
 - Scientific
+- Engineering
 - 기타 domain-specific skills
 
-Skill은 Project, Document, Memory 같은 core data entity가 아니다. 외부
-skill은 검토·버전 고정·권한 검증 후 선택적으로 사용해야 하며 AI-Hub
-runtime dependency로 자동 편입하지 않는다.
+Skill은 Project, Document, Memory 같은 core data entity가 아니다. Skill
+library가 커지더라도 Task에 필요한 Skill만 선택해야 하며, 모든 Skill을
+기본 로드하지 않는다. 선택된 Skill만 context와 execution에 포함하면
+token/context 비용과 Skill 간 충돌을 줄일 수 있다. 자동 Skill selection은
+future proposal이다. 외부 skill은 검토·버전 고정·권한 검증 후 선택적으로
+사용해야 하며 AI-Hub runtime dependency로 자동 편입하지 않는다.
+
+```text
+Many Skills
+    ↓
+Task analysis
+    ↓
+Required Skill selection
+    ↓
+Selected Skills only
+    ↓
+Context / Execution
+```
+
+### Planning
+
+Planning은 다음 행동과 작업 순서를 결정하는 agent capability다.
+
+```text
+Understand
+   ↓
+Plan
+   ↓
+Execute
+   ↓
+Observe
+   ↓
+Review
+   ↓
+Re-plan
+```
+
+Planning은 A*, UCS, Greedy 또는 다른 탐색 알고리즘을 AI-Hub에 구현한다는
+뜻이 아니다. Planning은 무엇을 어떤 순서로 할지 결정하고, Workflow는
+정의된 단계를 어떻게 실행·검증할지 관리하며, Skill은 특정 작업을
+어떻게 수행할지 제공한다.
+
+### Harness / Agent Contract
+
+Harness는 External Agent 작업 lifecycle을 관리하는 architectural
+concept다. 현재 [Agent Contract](agent/agent-contract.md)는 reference
+contract이며 full Harness runtime은 구현되지 않았다.
+
+```text
+Task
+ ↓
+Repository Inspection
+ ↓
+Context Retrieval
+ ↓
+Plan
+ ↓
+Risk / Scope Check
+ ↓
+Implementation
+ ↓
+Build / Test
+ ↓
+Review
+ ↓
+Documentation / Memory
+```
+
+Harness는 inspection, planning, execution sequencing, risk/scope check,
+build/test, diff/review, documentation/handoff와 Memory handoff를
+조정한다. AI-Hub는 Harness Runtime을 직접 소유하지 않는다.
+
+```text
+External Agent / Harness
+        ↓
+Planning / Workflow / Skill / Policy / Hook
+        ↓
+AI-Hub
+├── Knowledge
+├── Search
+├── Context Assembly
+├── MCP
+└── Authorization
+```
 
 ### Workflows
 
@@ -215,6 +311,84 @@ domain skill 또는 workflow로 요청을 전달하는 future coordination layer
 Provider-specific authentication, pricing, retention, latency, benchmark,
 failure behavior는 provider boundary 뒤에 둔다. AI-Hub core가 특정
 vendor/model을 기본 요구사항으로 갖지 않도록 한다.
+
+### Plugin
+
+Plugin은 여러 Agent capability를 묶어 배포·공급하는 external ecosystem
+단위로 정의한다.
+
+```text
+Plugin
+├── Skills
+├── Custom Agents
+├── Hooks
+└── MCP
+```
+
+Plugin은 AI-Hub core entity가 아니며, plugin runtime, marketplace,
+registry를 현재 구현하지 않는다. 외부 plugin은 검토·검증·권한·버전
+고정 후 필요한 기능만 선택적으로 사용한다.
+
+### Project Rules and Selectable Capabilities
+
+Agent architecture에는 항상 적용되는 Project Rules와 Task에 따라
+선택되는 capabilities라는 두 control plane이 있다.
+
+```text
+Project Rules
+        │
+        ↓
+      Agent
+        │
+Task Analysis / Planning
+        │
+ ┌──────┼───────┐
+ ↓      ↓       ↓
+Skill  Agent   MCP
+ └──────┼───────┘
+        ↓
+     Execute
+```
+
+`AGENTS.md`, `copilot-instructions.md`, 그리고 이 repository의
+`AI_AGENT_WORKFLOW.md` 같은 Project Rules는 repository 조사, 기존 구조
+우선, 공식 자료, 근거와 추론 구분, 최소 변경, Build/Test와
+Troubleshooting 기록을 지속적으로 안내한다. Skills, Agents, Plugins,
+MCP는 Task 분석 결과에 따라 선택되는 capability다. 자동 선택은 현재
+구현이 아니다.
+
+### Future Skill and Workflow Discovery
+
+현재는 다음과 같이 AI-Hub MCP가 Knowledge와 Context를 제공한다.
+
+```text
+AI
+ ↓
+AI-Hub MCP
+ ↓
+Knowledge / Context
+```
+
+장기적으로 Agent가 Task에 필요한 Knowledge, Context, Skill, Workflow를
+찾고 선택하도록 discovery support를 제공할 수 있다.
+
+```text
+AI
+ ↓
+Task Analysis / Planning
+ ↓
+AI-Hub
+├── Knowledge discovery
+├── Context discovery
+├── Skill discovery
+└── Workflow discovery
+ ↓
+Agent
+```
+
+이는 future infrastructure proposal이며 현재 Skill discovery,
+Workflow discovery, marketplace, 자동 Skill selection을 구현된 MCP
+capability로 표현하지 않는다.
 
 ### M1 Agent Layer contract boundary
 
@@ -437,26 +611,35 @@ Project-specific Router
 - Search
 - Context Assembly
 - MCP
+- Authorization boundary
 
 **현재 상태:** largely implemented.
 Project/Memory/Document/DocumentChunk, unified search, canonical Context
 Assembly, REST context routes, 현재 MCP 다섯 개 tool, HTTP integration 및
-PostgreSQL 17 + pgvector E2E가 구현·검증되어 있다. 추가적인 MCP capability는
-별도 변경으로 다룬다.
+PostgreSQL 17 + pgvector E2E가 구현·검증되어 있다. Authorization Guard는
+project filtering과 분리된 request boundary capability다. 추가적인 MCP
+capability는 별도 변경으로 다룬다.
 
 ### M1 — Agent Layer
 
-- Skills
-- Workflows
+- Planning
+- Workflow
+- Skill
 - Policy
-- Hooks
+- Harness / Agent Contract
+- Hook
 
-**현재 상태:** current development/design stage.
-저장소의 agent workflow 문서는 coding/change policy이며, 이것만으로
-runtime skill registry, workflow executor, hook system이 구현된 것은 아니다.
-첫 단계는 read-only context 사용과 검증 절차를 host-side에서 정의하는
-것이다. `get_context`와 Authorization Guard는 agent-facing 경계의 초기
-capability로 다루되, full Agent runtime으로 해석하지 않는다.
+**현재 상태:** active development / early implementation.
+Committed implementation에는 Authorization boundary, Minimal Skill
+Interface, `ContextProvider` contract와 ROS2 Robotics Skill prototype이
+포함되어 있다. Agent Contract, Skill/Workflow/Policy/Hook reference
+documents는 External Agent 설계를 정의하지만 full Harness runtime,
+Skill registry, Workflow runtime, Policy engine, Hook runtime은 구현되지
+않았다.
+
+Planning은 abstraction으로만 명시되며 A*, UCS, Greedy 등의 탐색
+알고리즘을 AI-Hub에 구현하지 않는다. Skill은 모든 Task에 자동 로드되지
+않고 필요한 capability만 선택하는 future design principle을 따른다.
 
 ### M2 — Memory
 
@@ -485,16 +668,68 @@ Session schema, automatic summarization, handoff generation, memory ranking,
 multi-agent shared memory와 provider-specific memory behavior는 M2의
 별도 설계로 남긴다.
 
-### M3 — Domain Intelligence
+Harness 실행 결과는 향후 명시적인 Memory handoff 후보가 될 수 있다.
 
+```text
+Harness
+ ↓
+Task Execution
+ ↓
+Result / Failure
+ ↓
+Review
+ ↓
+Memory
+├── Decision
+├── Troubleshooting
+└── Project State
+```
+
+저장 후보는 중요한 결정, 실패한 접근, 오류 원인, 해결 방법, 변경사항과
+프로젝트 상태다. 자동 저장 runtime은 현재 구현하지 않으며, Session
+Memory와 AI-Hub Knowledge Memory의 ownership boundary를 유지한다.
+Memory promotion에는 approval, provenance, project scope가 필요하다.
+
+### M3 — Semantic / Domain Intelligence
+
+- Ontology
+- Entity / Relation
+- Knowledge Graph
 - Scientific
 - Engineering
 - Robotics
-- Control
-- Other Domains
 
 **현재 상태:** future/planned.
-도메인 skill은 project-agnostic core 위의 선택적 capability다.
+Ontology는 개념과 관계·규칙을 정의하고, Knowledge Graph는 실제 project
+entity와 relation을 연결한다. Context Assembly는 현재 Task에 필요한
+지식을 정규화하는 경계로 유지되며, 도메인 skill은 project-agnostic
+core 위의 선택적 capability다.
+
+```text
+Ontology
+   ↓
+Entity / Relation
+   ↓
+Project Meaning
+   ↓
+Context Assembly
+   ↓
+Agent Planning
+```
+
+예시:
+
+```text
+Robot
+ ├── has_sensor → LiDAR
+ ├── uses → Nav2
+ ├── has → Local Planner
+ └── executes → Patrol
+```
+
+Ontology/Knowledge Graph는 현재 구현하지 않는다. Entity resolution,
+duplicate identity, ID management, relation validation은 M3의 별도
+future design 문제다.
 
 ```text
 Engineering Question
@@ -543,6 +778,26 @@ Router는 요청을 처리할 capability/model을 선택하지만 AI-Hub Knowled
 provider interface, evaluation set, provenance, 비용·latency·privacy
 정책이 정해지기 전에는 특정 provider를 core에 결합하지 않는다.
 
+M1과 연결되는 장기 선택 흐름은 다음과 같다.
+
+```text
+User Task
+    ↓
+Router / Planner
+    ↓
+Task Classification
+    ↓
+Skill Selection
+    ↓
+Workflow Selection
+    ↓
+Agent / Harness
+```
+
+예를 들어 Coding은 Coding Skill, Research는 Scientific Skill, Robotics는
+ROS2 / Robotics Skill로 연결될 수 있다. Router와 Planner는 현재
+구현되지 않았고, Knowledge source of truth를 대체하지 않는다.
+
 ### M5 — Development Automation
 
 - GitHub
@@ -550,22 +805,74 @@ provider interface, evaluation set, provenance, 비용·latency·privacy
 - Testing
 - Documentation
 - CI/CD
+- Security
 
 **현재 상태:** future/planned.
 외부 시스템 connector와 자동화는 최소 권한, 승인, secret, prompt
 injection, audit 경계를 갖춘 별도 integration으로 다룬다.
 
-## 6. External reference and candidate classification
+## 6. Future target architecture
+
+장기 target은 AI-Hub Knowledge infrastructure와 External Agent support를
+분리한다.
+
+```text
+AI-Hub
+│
+├── Knowledge
+│
+├── Semantic Layer
+│   ├── Ontology
+│   ├── Entity / Relation
+│   └── Knowledge Graph
+│
+├── Context Assembly
+│
+└── Agent Support
+    │
+    ├── Skill Discovery
+    ├── Workflow Discovery
+    └── Context Support
+         ↓
+      Router / Planner
+         ↓
+      Agent / Harness
+         │
+    ┌────┼────────┐
+    ↓    ↓        ↓
+Planning Workflow Review
+    │
+    ↓
+Skills
+    │
+ ┌──┼─────┐
+ ↓  ↓     ↓
+Model MCP Tools
+    │
+    ↓
+Project / Code
+```
+
+이 diagram은 future target architecture이며 현재 runtime architecture로
+해석하지 않는다. 특히 Skill/Workflow discovery, Plugin system, Ontology,
+Knowledge Graph, Router, full Harness와 automatic Memory promotion은
+현재 구현되지 않았다.
+
+## 7. External reference and candidate classification
 
 다음 항목은 현재 AI-Hub에 통합된 기능이 아니라 외부 reference 또는
 future candidate를 분류한 것이다.
 
 | Project / Feature | AI-Hub role | Stage |
 |---|---|---|
+| ECC / Agent Harness | Harness / workflow reference | M1 |
+| Planning / search-planning concepts | Planning reference | M1 |
+| Awesome Copilot | External skill library reference | M1 |
 | Archify Diagram Skill | M1 candidate | External reference |
 | Ponytail Minimal Coding Workflow | M1 | Agent workflow reference |
-| ECC Agent Harness / Workflow | M1 | External reference |
 | Scientific Agent Skills | M3 | Scientific / Engineering skill reference |
+| Ontology | M3 | Semantic Layer reference |
+| Knowledge Graph | M3 | Semantic Layer reference |
 | Claude Map 계열 | M2 | Session Memory reference |
 | MCP Official Skills | M1 | MCP development reference |
 | GitHub MCP | M5 | GitHub tool reference |
@@ -590,7 +897,7 @@ architecture 관점의 reference candidate로만 기록한다.
 > 별도 검증 대상이며 현재 AI-Hub architecture의 사실이나 요구사항으로
 > 채택하지 않는다.
 
-## 7. Agent Expansion principles
+## 8. Agent Expansion principles
 
 1. AI-Hub core remains project-agnostic.
 2. LIMO is a project/use case, not the platform boundary.
@@ -606,8 +913,27 @@ architecture 관점의 reference candidate로만 기록한다.
 12. External model claims require independent verification before becoming
     architecture requirements.
 13. Production features must be separated from future design proposals.
+14. Planning determines intended next actions; Workflow defines execution
+    structure.
+15. Harness manages the end-to-end agent work lifecycle but does not replace
+    Knowledge infrastructure.
+16. Skills should be selected for the Task rather than all loaded by default.
+17. Project Rules are persistent guidance; Skills, Agents, Plugins and MCP
+    are selectable capabilities.
+18. AI-Hub may provide future discovery support without becoming the Skill
+    runtime.
+19. Router and Planner may select capability/model, but Knowledge remains the
+    source of truth.
+20. Memory captures reusable decisions and troubleshooting only through
+    explicit ownership and provenance rules.
+21. Semantic Layer improves entity/relation-aware context selection; it does
+    not replace Context Assembly.
+22. External ecosystem patterns are references until independently validated.
+23. Plugin adoption is capability selection, not capability accumulation.
+24. Token/context efficiency is an architectural concern when multiple
+    capabilities coexist.
 
-## 8. Future architecture examples
+## 9. Future architecture examples
 
 ### Architecture Skill
 
@@ -661,13 +987,14 @@ Plan
 이는 AI-Hub runtime workflow가 아니라, 향후 agent host가 따를 수 있는
 검증 중심 작업 절차의 설계 예시다.
 
-## 9. Scope boundary
+## 10. Scope boundary
 
 ### 현재 AI-Hub core가 소유하는 것
 
 - Knowledge
 - Search
 - Context
+- Authorization boundary
 - 현재 Knowledge MCP boundary
 - REST context API
 - PostgreSQL/pgvector 기반 persistence와 retrieval
@@ -676,6 +1003,8 @@ Plan
 
 - Skills
 - Workflows
+- Planning
+- Harness / Agent Contract
 - Memory(session/project state/troubleshooting)
 - Model & Routing
 - Automation
@@ -692,7 +1021,43 @@ Plan
 분리하기 위한 것이다. 특히 `project_id` filtering은 authorization이
 아니며, 인증·인가 설계는 별도의 security milestone으로 다룬다.
 
-## 10. Design decisions for future work
+## 11. Agent Stack Audit
+
+장기적으로 다음 Agent ecosystem을 M1 integration review에서 함께
+조사하고 다음 상태로 분류할 수 있다.
+
+```text
+Plugin
+Skill
+Custom Agent
+Instruction
+Hook
+MCP
+Harness
+Memory
+Router
+```
+
+각 항목은 `ADOPT`, `EXPERIMENT`, `REFERENCE`, `DEFER` 중 하나로 분류하고,
+실제 runtime 호환성, 역할 중복, 충돌 가능성, context/token 비용,
+유지보수 비용, 보안/권한, portability, AI-Hub ownership boundary를
+평가한다. 목표는 기술을 많이 넣는 것이 아니라 다음 흐름으로 검증된
+패턴만 shared contract나 guideline으로 승격하는 것이다.
+
+```text
+External ecosystem
+ ↓
+Practical validation
+ ↓
+Useful pattern
+ ↓
+AI-Hub shared contract / guideline
+```
+
+이 audit은 현재 구현이 아니라 M1 integration review의 다음
+research/design 작업이다.
+
+## 12. Design decisions for future work
 
 - 새로운 project는 LIMO 전용 branch나 schema가 아니라 기존 Project,
   Document, Memory, Search, Context 계약을 통해 추가한다.
@@ -707,8 +1072,14 @@ Plan
   retention과 권한 범위를 문서화한다.
 - Production deployment와 future proposal의 상태를 같은 검증 문장으로
   표현하지 않는다.
+- ECC를 AI-Hub Core dependency로 편입하지 않는다. Plan → Execute →
+  Review, 작업 전 조사, 최소 변경, 테스트, diff 검토, 실패 기록 등의
+  검증된 작업 원칙만 Agent Contract/Workflow 설계에 참고하고 채택한다.
+- Plugin, Skill, Agent, Instruction, Hook, MCP, Harness, Memory, Router는
+  capability selection과 ownership boundary를 먼저 검토하며, 자동
+  accumulation을 기본값으로 삼지 않는다.
 
-## 11. Status vocabulary
+## 13. Status vocabulary
 
 문서와 구현 보고에서 다음 용어를 일관되게 사용한다.
 
