@@ -26,6 +26,7 @@ from app.core.authorization import (
     mcp_authorization_context,
     require_mcp_project_access,
 )
+from app.core.token_verifier import authorization_context_from_claims
 from app.core.documents import get_document as fetch_document
 from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
@@ -150,41 +151,15 @@ class KeycloakJWTVerifier(TokenVerifier):
 def _authorization_context_from_access_token(
     access_token: AccessToken,
 ) -> AuthorizationContext:
-    """Translate verified token claims into the existing auth contract."""
-    claims = access_token.claims or {}
+    """Translate a verified MCP AccessToken into an AuthorizationContext.
+
+    Delegates claims interpretation to the shared token_verifier module so
+    that MCP and REST apply identical rules.
+    """
     identity = access_token.subject or access_token.client_id
-    if not identity:
-        raise AuthorizationDenied(
-            "authenticated token does not contain a principal"
-        )
-
-    raw_project_ids = claims.get("allowed_project_ids", ())
-    if not isinstance(raw_project_ids, (list, tuple, set, frozenset)):
-        raise AuthorizationDenied(
-            "authenticated token contains invalid project permissions"
-        )
-
-    try:
-        allowed_project_ids = frozenset(
-            int(project_id) for project_id in raw_project_ids
-        )
-    except (TypeError, ValueError) as exc:
-        raise AuthorizationDenied(
-            "authenticated token contains invalid project permissions"
-        ) from exc
-
-    auth_method = claims.get("auth_method")
-    allow_global_read = (
-        auth_method == "static_api_key"
-        or claims.get("allow_global_read") is True
-    )
-    allow_write = claims.get("allow_write") is True
-
-    return AuthorizationContext(
-        identity=str(identity),
-        allowed_project_ids=allowed_project_ids,
-        allow_global_read=allow_global_read,
-        allow_write=allow_write,
+    return authorization_context_from_claims(
+        identity=identity,
+        claims=access_token.claims or {},
     )
 
 

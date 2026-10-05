@@ -55,6 +55,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       HF_HOME: /root/.cache/huggingface
+      MCP_ACCESS_TOKEN: ${MCP_ACCESS_TOKEN}
+      MCP_RESOURCE_URL: https://ros2-server.tail49948f.ts.net:10000/mcp
+      KEYCLOAK_ISSUER: https://ros2-server.tail49948f.ts.net:8443/realms/ai-hub
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/ai-hub/protocol/openid-connect/certs
 
     ports:
       - "127.0.0.1:8000:8000"
