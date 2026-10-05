@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -52,7 +52,7 @@ class MemoryPatchProjectIdTests(unittest.TestCase):
         connection = FakeConnection(project_row=project_row)
         with (
             patch.object(memories, "get_db_connection", return_value=connection),
-            patch.object(memories.model, "encode", return_value=[0.1, 0.2]),
+            patch.object(memories.model, "encode", return_value=MagicMock(tolist=lambda: [0.1, 0.2])),
             patch.object(memories, "Vector", side_effect=lambda value: value),
         ):
             response = memories.update_memory(7, self.make_update(payload))
@@ -87,7 +87,7 @@ class MemoryPatchProjectIdTests(unittest.TestCase):
         connection = FakeConnection(project_row=None)
         with (
             patch.object(memories, "get_db_connection", return_value=connection),
-            patch.object(memories.model, "encode", return_value=[0.1, 0.2]),
+            patch.object(memories.model, "encode", return_value=MagicMock(tolist=lambda: [0.1, 0.2])),
             patch.object(memories, "Vector", side_effect=lambda value: value),
         ):
             with self.assertRaises(HTTPException) as raised:

@@ -6,7 +6,9 @@ from app.core.db import get_db_connection
 from app.core.embedding import model
 from app.core.authorization import (
     AuthorizationDenied,
+    get_request_authorization_context,
     require_bound_request_project_access,
+    require_request_project_write_access,
 )
 
 
@@ -312,16 +314,41 @@ def search_memories(
 @router.get("/{memory_id}")
 def get_memory(memory_id: int, request: Request = None):
     try:
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    project_id
-                FROM memories
-                WHERE id = %s;
-                """,
-                (memory_id,),
-            ).fetchone()
+            if context is not None:
+                row = conn.execute(
+                    """
+                    SELECT
+                        project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (
+                        memory_id,
+                        list(context.allowed_project_ids),
+                        context.allow_global_read,
+                    ),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT
+                        project_id
+                    FROM memories
+                    WHERE id = %s;
+                    """,
+                    (memory_id,),
+                ).fetchone()
 
             if row is None:
                 raise HTTPException(
@@ -416,20 +443,29 @@ def update_memory(
                     detail="Memory not found",
                 )
 
-            effective_project_id = (
-                memory.project_id
-                if "project_id" in (
-                    memory.model_fields_set
-                    if hasattr(memory, "model_fields_set")
-                    else memory.__fields_set__
-                )
-                else current[5]
-            )
+            source_project_id = current[5]
             require_bound_request_project_access(
                 request,
                 operation="write",
-                project_id=effective_project_id,
+                project_id=source_project_id,
             )
+
+            fields_set = (
+                memory.model_fields_set
+                if hasattr(memory, "model_fields_set")
+                else memory.__fields_set__
+            )
+
+            if (
+                "project_id" in fields_set
+                and memory.project_id is not None
+                and memory.project_id != source_project_id
+            ):
+                require_bound_request_project_access(
+                    request,
+                    operation="write",
+                    project_id=memory.project_id,
+                )
 
             content = (
                 memory.content
@@ -561,15 +597,35 @@ def update_memory(
 @router.delete("/{memory_id}")
 def delete_memory(memory_id: int, request: Request = None):
     try:
+        if request is not None:
+            require_request_project_write_access(request)
+
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            project = conn.execute(
-                """
-                SELECT project_id
-                FROM memories
-                WHERE id = %s;
-                """,
-                (memory_id,),
-            ).fetchone()
+            if context is not None:
+                project = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND project_id = ANY(%s);
+                    """,
+                    (memory_id, list(context.allowed_project_ids)),
+                ).fetchone()
+            else:
+                project = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM memories
+                    WHERE id = %s;
+                    """,
+                    (memory_id,),
+                ).fetchone()
 
             if project is None:
                 raise HTTPException(

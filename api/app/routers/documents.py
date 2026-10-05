@@ -10,7 +10,9 @@ from app.core.document_ingest import chunk_pages, extract_text
 from app.core.embedding import model
 from app.core.authorization import (
     AuthorizationDenied,
+    get_request_authorization_context,
     require_bound_request_project_access,
+    require_request_project_write_access,
 )
 
 from app.core.search import (
@@ -528,22 +530,29 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
                     detail="Document not found",
                 )
 
+            source_project_id = current[0]
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=source_project_id,
+            )
+
             fields_set = (
                 document.model_fields_set
                 if hasattr(document, "model_fields_set")
                 else document.__fields_set__
             )
-            effective_project_id = (
-                document.project_id
-                if "project_id" in fields_set
-                else current[0]
-            )
 
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=effective_project_id,
-            )
+            if (
+                "project_id" in fields_set
+                and document.project_id is not None
+                and document.project_id != source_project_id
+            ):
+                require_bound_request_project_access(
+                    request,
+                    operation="write",
+                    project_id=document.project_id,
+                )
 
             project_id = (
                 document.project_id
@@ -675,15 +684,39 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
 @router.get("/{document_id}")
 def get_document(document_id: int, request: Request = None):
     try:
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT project_id
-                FROM documents
-                WHERE id = %s;
-                """,
-                (document_id,),
-            ).fetchone()
+            if context is not None:
+                row = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (
+                        document_id,
+                        list(context.allowed_project_ids),
+                        context.allow_global_read,
+                    ),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM documents
+                    WHERE id = %s;
+                    """,
+                    (document_id,),
+                ).fetchone()
 
             if row is None:
                 raise HTTPException(
@@ -723,15 +756,35 @@ def get_document(document_id: int, request: Request = None):
 @router.delete("/{document_id}")
 def delete_document(document_id: int, request: Request = None):
     try:
+        if request is not None:
+            require_request_project_write_access(request)
+
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT project_id, title
-                FROM documents
-                WHERE id = %s;
-                """,
-                (document_id,),
-            ).fetchone()
+            if context is not None:
+                row = conn.execute(
+                    """
+                    SELECT project_id, title
+                    FROM documents
+                    WHERE id = %s
+                      AND project_id = ANY(%s);
+                    """,
+                    (document_id, list(context.allowed_project_ids)),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT project_id, title
+                    FROM documents
+                    WHERE id = %s;
+                    """,
+                    (document_id,),
+                ).fetchone()
 
             if row is None:
                 raise HTTPException(
@@ -785,13 +838,6 @@ def create_document_chunk(
     request: Request = None,
 ):
     try:
-        embedding = Vector(
-            model.encode(
-                "passage: " + chunk.content,
-                normalize_embeddings=True,
-            ).tolist()
-        )
-
         with get_db_connection() as conn:
             document = conn.execute(
                 """
@@ -812,6 +858,13 @@ def create_document_chunk(
                 request,
                 operation="write",
                 project_id=document[1],
+            )
+
+            embedding = Vector(
+                model.encode(
+                    "passage: " + chunk.content,
+                    normalize_embeddings=True,
+                ).tolist()
             )
 
             existing = conn.execute(
@@ -883,15 +936,39 @@ def create_document_chunk(
 @router.get("/{document_id}/chunks")
 def list_document_chunks(document_id: int, request: Request = None):
     try:
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            document = conn.execute(
-                """
-                SELECT id, project_id
-                FROM documents
-                WHERE id = %s;
-                """,
-                (document_id,),
-            ).fetchone()
+            if context is not None:
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (
+                        document_id,
+                        list(context.allowed_project_ids),
+                        context.allow_global_read,
+                    ),
+                ).fetchone()
+            else:
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s;
+                    """,
+                    (document_id,),
+                ).fetchone()
 
             if document is None:
                 raise HTTPException(
