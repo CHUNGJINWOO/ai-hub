@@ -56,10 +56,22 @@ class AuthorizationGuardTests(unittest.TestCase):
             project_id=None,
         )
 
-    def test_requires_project_for_durable_write(self):
-        with self.assertRaisesRegex(AuthorizationDenied, "project_id is required"):
+    def test_allows_projectless_write_when_authorized_for_durable_writes(self):
+        require_project_access(
+            self.context,
+            operation="write",
+            project_id=None,
+        )
+
+    def test_denies_projectless_write_without_write_permission(self):
+        context = AuthorizationContext(
+            identity="reader",
+            allowed_project_ids=frozenset({7}),
+            allow_write=False,
+        )
+        with self.assertRaisesRegex(AuthorizationDenied, "durable writes"):
             require_project_access(
-                self.context,
+                context,
                 operation="write",
                 project_id=None,
             )

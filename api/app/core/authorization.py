@@ -106,16 +106,18 @@ def require_project_access(
     project_id: int | None,
 ) -> None:
     """Enforce project authorization before data filtering or durable writes."""
-    if project_id is None:
-        if operation == "read" and context.allow_global_read:
-            return
-        raise AuthorizationDenied(
-            "project_id is required for this authorization request"
-        )
-
     if operation == "write" and not context.allow_write:
         raise AuthorizationDenied(
             f"identity is not authorized for durable writes: {context.identity}"
+        )
+
+    if project_id is None:
+        if operation == "read" and context.allow_global_read:
+            return
+        if operation == "write" and context.allow_write:
+            return
+        raise AuthorizationDenied(
+            "project_id is required for this authorization request"
         )
 
     if project_id not in context.allowed_project_ids:

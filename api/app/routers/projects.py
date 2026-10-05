@@ -1,6 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.core.authorization import (
+    AuthorizationDenied,
+    require_bound_request_project_access,
+)
 from app.core.projects import list_projects as fetch_projects
 from app.core.db import get_db_connection
 
@@ -26,8 +30,14 @@ class ProjectUpdate(BaseModel):
 
 
 @router.post("")
-def create_project(project: ProjectCreate):
+def create_project(project: ProjectCreate, request: Request = None):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=None,
+        )
+
         if project.status not in {"active", "archived", "completed"}:
             raise HTTPException(
                 status_code=400,
@@ -91,21 +101,50 @@ def create_project(project: ProjectCreate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("")
-def list_projects():
+def list_projects(request: Request = None):
     try:
-        return fetch_projects()
+        context = (
+            getattr(request.state, "authorization_context", None)
+            if request is not None
+            else None
+        )
+
+        if context is None:
+            require_bound_request_project_access(
+                request,
+                operation="read",
+                project_id=None,
+            )
+
+        if getattr(context, "allow_global_read", False):
+            return fetch_projects()
+
+        return fetch_projects(allowed_project_ids=getattr(context, "allowed_project_ids", frozenset()))
+
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{project_id}")
-def get_project(project_id: int):
+def get_project(project_id: int, request: Request = None):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="read",
+            project_id=project_id,
+        )
+
         with get_db_connection() as conn:
             row = conn.execute(
                 """
@@ -154,13 +193,22 @@ def get_project(project_id: int):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.patch("/{project_id}")
-def update_project(project_id: int, project: ProjectUpdate):
+def update_project(project_id: int, project: ProjectUpdate, request: Request = None):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=project_id,
+        )
+
         with get_db_connection() as conn:
             current = conn.execute(
                 """
@@ -260,13 +308,22 @@ def update_project(project_id: int, project: ProjectUpdate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: int):
+def delete_project(project_id: int, request: Request = None):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=project_id,
+        )
+
         with get_db_connection() as conn:
             row = conn.execute(
                 """
@@ -294,6 +351,9 @@ def delete_project(project_id: int):
 
     except HTTPException:
         raise
+
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
