@@ -421,21 +421,47 @@ def update_memory(
     request: Request = None,
 ):
     try:
+        if request is not None:
+            require_request_project_write_access(request)
+
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            current = conn.execute(
-                """
-                SELECT
-                    content,
-                    memory_type,
-                    category,
-                    importance,
-                    source,
-                    project_id
-                FROM memories
-                WHERE id = %s;
-                """,
-                (memory_id,),
-            ).fetchone()
+            if context is not None:
+                current = conn.execute(
+                    """
+                    SELECT
+                        content,
+                        memory_type,
+                        category,
+                        importance,
+                        source,
+                        project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND project_id = ANY(%s);
+                    """,
+                    (memory_id, list(context.allowed_project_ids)),
+                ).fetchone()
+            else:
+                current = conn.execute(
+                    """
+                    SELECT
+                        content,
+                        memory_type,
+                        category,
+                        importance,
+                        source,
+                        project_id
+                    FROM memories
+                    WHERE id = %s;
+                    """,
+                    (memory_id,),
+                ).fetchone()
 
             if current is None:
                 raise HTTPException(

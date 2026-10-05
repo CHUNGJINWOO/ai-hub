@@ -507,22 +507,49 @@ def search_documents(
 @router.patch("/{document_id}")
 def update_document(document_id: int, document: DocumentUpdate, request: Request = None):
     try:
+        if request is not None:
+            require_request_project_write_access(request)
+
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            current = conn.execute(
-                """
-                SELECT
-                    project_id,
-                    title,
-                    filename,
-                    mime_type,
-                    source,
-                    description,
-                    status
-                FROM documents
-                WHERE id = %s;
-                """,
-                (document_id,),
-            ).fetchone()
+            if context is not None:
+                current = conn.execute(
+                    """
+                    SELECT
+                        project_id,
+                        title,
+                        filename,
+                        mime_type,
+                        source,
+                        description,
+                        status
+                    FROM documents
+                    WHERE id = %s
+                      AND project_id = ANY(%s);
+                    """,
+                    (document_id, list(context.allowed_project_ids)),
+                ).fetchone()
+            else:
+                current = conn.execute(
+                    """
+                    SELECT
+                        project_id,
+                        title,
+                        filename,
+                        mime_type,
+                        source,
+                        description,
+                        status
+                    FROM documents
+                    WHERE id = %s;
+                    """,
+                    (document_id,),
+                ).fetchone()
 
             if current is None:
                 raise HTTPException(
@@ -838,15 +865,35 @@ def create_document_chunk(
     request: Request = None,
 ):
     try:
+        if request is not None:
+            require_request_project_write_access(request)
+
+        context = (
+            get_request_authorization_context(request)
+            if request is not None
+            else None
+        )
+
         with get_db_connection() as conn:
-            document = conn.execute(
-                """
-                SELECT id, project_id
-                FROM documents
-                WHERE id = %s;
-                """,
-                (document_id,),
-            ).fetchone()
+            if context is not None:
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND project_id = ANY(%s);
+                    """,
+                    (document_id, list(context.allowed_project_ids)),
+                ).fetchone()
+            else:
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s;
+                    """,
+                    (document_id,),
+                ).fetchone()
 
             if document is None:
                 raise HTTPException(

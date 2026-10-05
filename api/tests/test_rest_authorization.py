@@ -1785,6 +1785,352 @@ class IdEnumerationOracleDefenseTests(unittest.TestCase):
         self.assertEqual(res_existing.json()["status"], "deleted")
         self.assertEqual(res_missing.status_code, 404)
 
+    # =========================================================================
+    # 6. PATCH /documents/{document_id}
+    # =========================================================================
+
+    def test_patch_document_unauthenticated_prevents_db_lookup_and_returns_403(self):
+        """Unauthenticated PATCH /documents/{id} returns 403 without querying DB."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            res_missing = self.client_no_auth.patch("/documents/999999", json={"title": "new"})
+            res_existing = self.client_no_auth.patch("/documents/1", json={"title": "new"})
+
+        self.assertEqual(res_missing.status_code, 403)
+        self.assertEqual(res_existing.status_code, 403)
+        mock_db.assert_not_called()
+
+    def test_patch_document_read_only_caller_denied_before_db_lookup(self):
+        """Caller with allow_write=False is denied before DB connection on PATCH /documents/{id}."""
+        context = AuthorizationContext(
+            identity="reader",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=True,
+            allow_write=False,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            client = self._client_with_context(context)
+            with client:
+                response = client.patch("/documents/1", json={"title": "new"})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("not authorized for durable writes", response.json()["detail"])
+        mock_db.assert_not_called()
+
+    def test_patch_document_scoped_user_applies_sql_filter_and_normalizes_to_404(self):
+        """Scoped caller queries with SQL project filter; nonexistent and out-of-scope IDs return 404."""
+        context = AuthorizationContext(
+            identity="scoped-writer",
+            allowed_project_ids=frozenset({2}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.return_value = None
+
+            client = self._client_with_context(context)
+            with client:
+                res_missing = client.patch("/documents/999999", json={"title": "new"})
+                res_out_of_scope = client.patch("/documents/1", json={"title": "new"})
+
+        self.assertEqual(res_missing.status_code, 404)
+        self.assertEqual(res_out_of_scope.status_code, 404)
+        executed_sqls = [call[0][0] for call in mock_conn.execute.call_args_list]
+        self.assertTrue(all("project_id = ANY(%s)" in sql for sql in executed_sqls))
+        executed_params = [call[0][1] for call in mock_conn.execute.call_args_list]
+        self.assertEqual(executed_params[0], (999999, [2]))
+        self.assertEqual(executed_params[1], (1, [2]))
+
+    def test_patch_document_authorized_user_success_and_normal_404(self):
+        """Authorized caller updates existing document (200) and gets normal 404 on nonexistent."""
+        context = AuthorizationContext(
+            identity="authorized-writer",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.side_effect = [
+                [1, "Old Title", "doc.txt", "text/plain", "manual", "desc", "active"],  # current
+                (1,),  # project existence check
+                (1, 1, "New Title", "doc.txt", "text/plain", "manual", "desc", "active", "now", "now"),  # RETURNING
+            ]
+
+            client = self._client_with_context(context)
+            with client:
+                res_existing = client.patch("/documents/1", json={"title": "New Title"})
+
+            mock_conn.execute.return_value.fetchone.side_effect = None
+            mock_conn.execute.return_value.fetchone.return_value = None
+            with client:
+                res_missing = client.patch("/documents/999", json={"title": "New Title"})
+
+        self.assertEqual(res_existing.status_code, 200)
+        self.assertEqual(res_existing.json()["title"], "New Title")
+        self.assertEqual(res_missing.status_code, 404)
+
+    # =========================================================================
+    # 7. PATCH /memories/{memory_id}
+    # =========================================================================
+
+    def test_patch_memory_unauthenticated_prevents_db_lookup_and_returns_403(self):
+        """Unauthenticated PATCH /memories/{id} returns 403 without querying DB."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.memories.get_db_connection") as mock_db,
+            patch.object(memories_router.model, "encode") as mock_encode,
+        ):
+            res_missing = self.client_no_auth.patch("/memories/999999", json={"content": "new"})
+            res_existing = self.client_no_auth.patch("/memories/1", json={"content": "new"})
+
+        self.assertEqual(res_missing.status_code, 403)
+        self.assertEqual(res_existing.status_code, 403)
+        mock_db.assert_not_called()
+        mock_encode.assert_not_called()
+
+    def test_patch_memory_read_only_caller_denied_before_db_lookup(self):
+        """Caller with allow_write=False is denied before DB connection on PATCH /memories/{id}."""
+        context = AuthorizationContext(
+            identity="reader",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=True,
+            allow_write=False,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.memories.get_db_connection") as mock_db,
+            patch.object(memories_router.model, "encode") as mock_encode,
+        ):
+            client = self._client_with_context(context)
+            with client:
+                response = client.patch("/memories/1", json={"content": "new"})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("not authorized for durable writes", response.json()["detail"])
+        mock_db.assert_not_called()
+        mock_encode.assert_not_called()
+
+    def test_patch_memory_scoped_user_applies_sql_filter_and_normalizes_to_404(self):
+        """Scoped caller queries with SQL project filter; nonexistent and out-of-scope IDs return 404."""
+        context = AuthorizationContext(
+            identity="scoped-writer",
+            allowed_project_ids=frozenset({2}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.memories.get_db_connection") as mock_db,
+            patch.object(memories_router.model, "encode") as mock_encode,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.return_value = None
+
+            client = self._client_with_context(context)
+            with client:
+                res_missing = client.patch("/memories/999999", json={"content": "new"})
+                res_out_of_scope = client.patch("/memories/1", json={"content": "new"})
+
+        self.assertEqual(res_missing.status_code, 404)
+        self.assertEqual(res_out_of_scope.status_code, 404)
+        mock_encode.assert_not_called()
+        executed_sqls = [call[0][0] for call in mock_conn.execute.call_args_list]
+        self.assertTrue(all("project_id = ANY(%s)" in sql for sql in executed_sqls))
+        executed_params = [call[0][1] for call in mock_conn.execute.call_args_list]
+        self.assertEqual(executed_params[0], (999999, [2]))
+        self.assertEqual(executed_params[1], (1, [2]))
+
+    def test_patch_memory_authorized_user_success_and_normal_404(self):
+        """Authorized caller updates existing memory (200) and gets normal 404 on nonexistent."""
+        context = AuthorizationContext(
+            identity="authorized-writer",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.memories.get_db_connection") as mock_db,
+            patch.object(memories_router.model, "encode") as mock_encode,
+        ):
+            mock_encode.return_value = MagicMock(tolist=lambda: [0.1] * 384)
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.side_effect = [
+                ("Old content", "fact", "cat", 3, "api", 1),  # current
+                (1,),  # project existence check
+                (1, "New content", "fact", "cat", 3, "api", "now"),  # RETURNING
+            ]
+
+            client = self._client_with_context(context)
+            with client:
+                res_existing = client.patch("/memories/1", json={"content": "New content"})
+
+            mock_conn.execute.return_value.fetchone.side_effect = None
+            mock_conn.execute.return_value.fetchone.return_value = None
+            with client:
+                res_missing = client.patch("/memories/999", json={"content": "New content"})
+
+        self.assertEqual(res_existing.status_code, 200)
+        self.assertEqual(res_existing.json()["status"], "updated")
+        self.assertEqual(res_missing.status_code, 404)
+
+    # =========================================================================
+    # 8. POST /documents/{document_id}/chunks
+    # =========================================================================
+
+    def test_create_document_chunk_unauthenticated_prevents_db_lookup_and_returns_403(self):
+        """Unauthenticated POST /documents/{id}/chunks returns 403 without querying DB or computing embedding."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+            patch.object(documents_router.model, "encode") as mock_encode,
+        ):
+            res_missing = self.client_no_auth.post(
+                "/documents/999999/chunks",
+                json={"content": "Chunk text", "chunk_index": 0},
+            )
+            res_existing = self.client_no_auth.post(
+                "/documents/1/chunks",
+                json={"content": "Chunk text", "chunk_index": 0},
+            )
+
+        self.assertEqual(res_missing.status_code, 403)
+        self.assertEqual(res_existing.status_code, 403)
+        mock_db.assert_not_called()
+        mock_encode.assert_not_called()
+
+    def test_create_document_chunk_read_only_caller_denied_before_db_lookup(self):
+        """Caller with allow_write=False is denied before DB connection on POST /documents/{id}/chunks."""
+        context = AuthorizationContext(
+            identity="reader",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=True,
+            allow_write=False,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+            patch.object(documents_router.model, "encode") as mock_encode,
+        ):
+            client = self._client_with_context(context)
+            with client:
+                response = client.post(
+                    "/documents/1/chunks",
+                    json={"content": "Chunk text", "chunk_index": 0},
+                )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("not authorized for durable writes", response.json()["detail"])
+        mock_db.assert_not_called()
+        mock_encode.assert_not_called()
+
+    def test_create_document_chunk_scoped_user_applies_sql_filter_and_normalizes_to_404(self):
+        """Scoped caller queries parent with SQL project filter; nonexistent and out-of-scope IDs return 404."""
+        context = AuthorizationContext(
+            identity="scoped-writer",
+            allowed_project_ids=frozenset({2}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+            patch.object(documents_router.model, "encode") as mock_encode,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.return_value = None
+
+            client = self._client_with_context(context)
+            with client:
+                res_missing = client.post(
+                    "/documents/999999/chunks",
+                    json={"content": "Chunk text", "chunk_index": 0},
+                )
+                res_out_of_scope = client.post(
+                    "/documents/1/chunks",
+                    json={"content": "Chunk text", "chunk_index": 0},
+                )
+
+        self.assertEqual(res_missing.status_code, 404)
+        self.assertEqual(res_out_of_scope.status_code, 404)
+        mock_encode.assert_not_called()
+        executed_sqls = [call[0][0] for call in mock_conn.execute.call_args_list]
+        self.assertTrue(all("project_id = ANY(%s)" in sql for sql in executed_sqls))
+        executed_params = [call[0][1] for call in mock_conn.execute.call_args_list]
+        self.assertEqual(executed_params[0], (999999, [2]))
+        self.assertEqual(executed_params[1], (1, [2]))
+
+    def test_create_document_chunk_authorized_user_success_and_normal_404(self):
+        """Authorized caller creates chunk on existing document (200) and gets normal 404 on nonexistent."""
+        context = AuthorizationContext(
+            identity="authorized-writer",
+            allowed_project_ids=frozenset({1}),
+            allow_global_read=False,
+            allow_write=True,
+        )
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+            patch.object(documents_router.model, "encode") as mock_encode,
+        ):
+            mock_encode.return_value = MagicMock(tolist=lambda: [0.1] * 384)
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.side_effect = [
+                (1, 1),  # document check (id, project_id)
+                None,    # chunk existing check (None -> does not exist yet)
+                (10, 1, 0, "Chunk text", 1, "now"),  # INSERT RETURNING
+            ]
+
+            client = self._client_with_context(context)
+            with client:
+                res_existing = client.post(
+                    "/documents/1/chunks",
+                    json={"content": "Chunk text", "chunk_index": 0},
+                )
+
+            mock_conn.execute.return_value.fetchone.side_effect = None
+            mock_conn.execute.return_value.fetchone.return_value = None
+            with client:
+                res_missing = client.post(
+                    "/documents/999/chunks",
+                    json={"content": "Chunk text", "chunk_index": 0},
+                )
+
+        self.assertEqual(res_existing.status_code, 200)
+        self.assertEqual(res_existing.json()["id"], 10)
+        self.assertEqual(res_missing.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
