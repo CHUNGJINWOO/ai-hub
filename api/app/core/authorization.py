@@ -32,12 +32,10 @@ _mcp_authorization_context: ContextVar[
 )
 
 
-def require_request_project_access(
+def get_request_authorization_context(
     request: Request | None,
-    *,
-    operation: AuthorizationOperation,
-    project_id: int | None,
-) -> None:
+) -> AuthorizationContext:
+    """Extract and validate the AuthorizationContext bound to the current request."""
     context = (
         getattr(request.state, "authorization_context", None)
         if request is not None
@@ -47,12 +45,50 @@ def require_request_project_access(
         raise AuthorizationDenied(
             "authorization context is not available for this request"
         )
+    return context
 
+
+def require_request_project_access(
+    request: Request | None,
+    *,
+    operation: AuthorizationOperation,
+    project_id: int | None,
+) -> None:
+    context = get_request_authorization_context(request)
     require_project_access(
         context,
         operation=operation,
         project_id=project_id,
     )
+
+
+def require_request_project_read_access(
+    request: Request | None,
+    project_id: int,
+) -> None:
+    """Permit read access if global read is allowed or project_id is in allowed_project_ids."""
+    context = get_request_authorization_context(request)
+    if context.allow_global_read or project_id in context.allowed_project_ids:
+        return
+    raise AuthorizationDenied(
+        f"identity is not authorized for project: {project_id}"
+    )
+
+
+def require_request_project_write_access(
+    request: Request | None,
+    project_id: int | None = None,
+) -> None:
+    """Enforce durable write permissions for project creation or mutation."""
+    context = get_request_authorization_context(request)
+    if not context.allow_write:
+        raise AuthorizationDenied(
+            f"identity is not authorized for durable writes: {context.identity}"
+        )
+    if project_id is not None and project_id not in context.allowed_project_ids:
+        raise AuthorizationDenied(
+            f"identity is not authorized for project: {project_id}"
+        )
 
 
 def require_bound_request_project_access(

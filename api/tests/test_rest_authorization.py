@@ -430,5 +430,115 @@ class RestAuthorizationMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+# ---------------------------------------------------------------------------
+# RestAuthorizationCoverageGapTests — verify gap behaviors across routers
+# ---------------------------------------------------------------------------
+
+class RestAuthorizationCoverageGapTests(unittest.TestCase):
+    """Verify authorization coverage, fail-open gaps, write semantics, and
+    pre-auth DB lookup oracle behavior across /documents, /memories, and /projects."""
+
+    def setUp(self):
+        self.client_no_auth = TestClient(app)
+        self.client_static_key = TestClient(
+            app, headers={"Authorization": f"Bearer {_TEST_API_KEY}"}
+        )
+
+    # --- 1 & 2. Unauthenticated requests to guarded routes fail closed (403) ---
+
+    def test_documents_without_auth_returns_403(self):
+        """Unauthenticated requests to /documents are rejected with 403."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_no_auth.get("/documents")
+        self.assertEqual(response.status_code, 403)
+
+    def test_memories_without_auth_returns_403(self):
+        """Unauthenticated requests to /memories are rejected with 403."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_no_auth.get("/memories")
+        self.assertEqual(response.status_code, 403)
+
+    # --- 7. /projects routes now enforce authorization guards (fail-closed) ---
+
+    def test_projects_list_without_auth_returns_403(self):
+        """GET /projects enforces authorization and returns 403 without auth."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_no_auth.get("/projects")
+        self.assertEqual(response.status_code, 403)
+
+    def test_projects_detail_without_auth_returns_403(self):
+        """GET /projects/{id} enforces authorization and returns 403 without auth."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_no_auth.get("/projects/1")
+        self.assertEqual(response.status_code, 403)
+
+    # --- 4. allow_write=False semantics (static API key cannot write) ---
+
+    def test_static_key_denied_for_document_write(self):
+        """Static API key has allow_write=False; document creation must be denied (403)."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_static_key.post(
+                "/documents",
+                json={"title": "Test Doc", "project_id": 1},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_static_key_denied_for_memory_write(self):
+        """Static API key has allow_write=False; memory creation must be denied (403)."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+        ):
+            response = self.client_static_key.post(
+                "/memories",
+                json={"content": "Test Memory", "project_id": 1},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    # --- 8. Pre-auth DB lookup oracle: 404 precedes 403 on missing resource ---
+
+    def test_document_detail_reveals_404_before_auth_check_for_missing_item(self):
+        """When an unauthenticated request accesses a non-existent document,
+        the DB lookup runs before authorization, returning 404 instead of 403."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.return_value = None
+            response = self.client_no_auth.get("/documents/999999")
+        self.assertEqual(response.status_code, 404)
+
+    def test_document_detail_returns_403_when_item_exists_in_db(self):
+        """When the document exists in DB, the guard runs after DB lookup and returns 403."""
+        with (
+            patch("app.main.ensure_memories_table"),
+            patch("app.main.ensure_projects_table"),
+            patch("app.routers.documents.get_db_connection") as mock_db,
+        ):
+            mock_conn = MagicMock()
+            mock_db.return_value.__enter__.return_value = mock_conn
+            mock_conn.execute.return_value.fetchone.return_value = [1]
+            response = self.client_no_auth.get("/documents/1")
+        self.assertEqual(response.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
