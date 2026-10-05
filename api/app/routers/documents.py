@@ -1,13 +1,17 @@
 import hashlib
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from pgvector import Vector
 
 from app.core.db import get_db_connection
 from app.core.document_ingest import chunk_pages, extract_text
 from app.core.embedding import model
+from app.core.authorization import (
+    AuthorizationDenied,
+    require_bound_request_project_access,
+)
 
 from app.core.search import (
     create_query_embedding,
@@ -53,8 +57,14 @@ class DocumentChunkCreate(BaseModel):
 # -------------------------
 
 @router.post("")
-def create_document(document: DocumentCreate):
+def create_document(document: DocumentCreate, request: Request):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=document.project_id,
+        )
+
         if document.status not in {"active", "archived"}:
             raise HTTPException(
                 status_code=400,
@@ -131,13 +141,22 @@ def create_document(document: DocumentCreate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("")
-def list_documents(project_id: int | None = None):
+def list_documents(project_id: int | None = None, request: Request = None):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="read",
+            project_id=project_id,
+        )
+
         with get_db_connection() as conn:
             if project_id is not None:
                 rows = conn.execute(
@@ -226,6 +245,9 @@ def list_documents(project_id: int | None = None):
             ],
         }
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -239,8 +261,15 @@ async def upload_document(
     file: UploadFile = File(...),
     project_id: int | None = None,
     title: str | None = Form(default=None),
+    request: Request = None,
 ):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="write",
+            project_id=project_id,
+        )
+
         if not file.filename:
             raise HTTPException(
                 status_code=400,
@@ -412,6 +441,9 @@ async def upload_document(
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -424,8 +456,15 @@ def search_documents(
     q: str,
     limit: int = 5,
     project_id: int | None = None,
+    request: Request = None,
 ):
     try:
+        require_bound_request_project_access(
+            request,
+            operation="read",
+            project_id=project_id,
+        )
+
         if not q.strip():
             raise HTTPException(
                 status_code=400,
@@ -452,16 +491,19 @@ def search_documents(
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=str(e),
         )
-    
+
 
 
 @router.patch("/{document_id}")
-def update_document(document_id: int, document: DocumentUpdate):
+def update_document(document_id: int, document: DocumentUpdate, request: Request = None):
     try:
         with get_db_connection() as conn:
             current = conn.execute(
@@ -485,6 +527,23 @@ def update_document(document_id: int, document: DocumentUpdate):
                     status_code=404,
                     detail="Document not found",
                 )
+
+            fields_set = (
+                document.model_fields_set
+                if hasattr(document, "model_fields_set")
+                else document.__fields_set__
+            )
+            effective_project_id = (
+                document.project_id
+                if "project_id" in fields_set
+                else current[0]
+            )
+
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=effective_project_id,
+            )
 
             project_id = (
                 document.project_id
@@ -606,13 +665,38 @@ def update_document(document_id: int, document: DocumentUpdate):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{document_id}")
-def get_document(document_id: int):
+def get_document(document_id: int, request: Request = None):
     try:
+        with get_db_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT project_id
+                FROM documents
+                WHERE id = %s;
+                """,
+                (document_id,),
+            ).fetchone()
+
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Document not found",
+                )
+
+            require_bound_request_project_access(
+                request,
+                operation="read",
+                project_id=row[0],
+            )
+
         result = fetch_document(document_id)
 
         if result is None:
@@ -626,6 +710,9 @@ def get_document(document_id: int):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -634,9 +721,30 @@ def get_document(document_id: int):
 
 
 @router.delete("/{document_id}")
-def delete_document(document_id: int):
+def delete_document(document_id: int, request: Request = None):
     try:
         with get_db_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT project_id, title
+                FROM documents
+                WHERE id = %s;
+                """,
+                (document_id,),
+            ).fetchone()
+
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Document not found",
+                )
+
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=row[0],
+            )
+
             row = conn.execute(
                 """
                 DELETE FROM documents
@@ -663,6 +771,9 @@ def delete_document(document_id: int):
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -671,6 +782,7 @@ def delete_document(document_id: int):
 def create_document_chunk(
     document_id: int,
     chunk: DocumentChunkCreate,
+    request: Request = None,
 ):
     try:
         embedding = Vector(
@@ -683,7 +795,7 @@ def create_document_chunk(
         with get_db_connection() as conn:
             document = conn.execute(
                 """
-                SELECT id
+                SELECT id, project_id
                 FROM documents
                 WHERE id = %s;
                 """,
@@ -695,6 +807,12 @@ def create_document_chunk(
                     status_code=404,
                     detail="Document not found",
                 )
+
+            require_bound_request_project_access(
+                request,
+                operation="write",
+                project_id=document[1],
+            )
 
             existing = conn.execute(
                 """
@@ -755,17 +873,20 @@ def create_document_chunk(
     except HTTPException:
         raise
 
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{document_id}/chunks")
-def list_document_chunks(document_id: int):
+def list_document_chunks(document_id: int, request: Request = None):
     try:
         with get_db_connection() as conn:
             document = conn.execute(
                 """
-                SELECT id
+                SELECT id, project_id
                 FROM documents
                 WHERE id = %s;
                 """,
@@ -777,6 +898,12 @@ def list_document_chunks(document_id: int):
                     status_code=404,
                     detail="Document not found",
                 )
+
+            require_bound_request_project_access(
+                request,
+                operation="read",
+                project_id=document[1],
+            )
 
             rows = conn.execute(
                 """
@@ -814,6 +941,9 @@ def list_document_chunks(document_id: int):
 
     except HTTPException:
         raise
+
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
