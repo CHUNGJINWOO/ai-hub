@@ -2,8 +2,11 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.core.authorization import (
     AuthorizationDenied,
-    require_bound_request_project_access,
+    authorize_read,
+    get_request_authorization_context,
 )
+from app.core.capabilities import Capability
+from app.core.scopes import ProjectScope
 from app.core.context_assembly import assemble_context as build_context
 from app.core.search import search_context as unified_search_context
 
@@ -16,18 +19,21 @@ router = APIRouter(
 
 @router.get("/assemble")
 def assemble_context(
+    request: Request,
     q: str,
     limit: int = 5,
     project_id: int | None = None,
-    request: Request = None,
 ):
     """Return normalized context items with citation-ready source records."""
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+                raise AuthorizationDenied(
+                    "project_id is required for this authorization request"
+                )
 
         if not q.strip():
             raise HTTPException(
@@ -52,17 +58,20 @@ def assemble_context(
 
 @router.get("/search")
 def search_context(
+    request: Request,
     q: str,
     limit: int = 5,
     project_id: int | None = None,
-    request: Request = None,
 ):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+                raise AuthorizationDenied(
+                    "project_id is required for this authorization request"
+                )
 
         if not q.strip():
             raise HTTPException(

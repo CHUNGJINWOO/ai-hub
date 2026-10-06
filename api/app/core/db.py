@@ -61,7 +61,7 @@ def ensure_projects_table():
             ALTER TABLE memories
             ADD COLUMN IF NOT EXISTS project_id BIGINT
             REFERENCES projects(id)
-            ON DELETE SET NULL;
+            ON DELETE RESTRICT;
             """
         )
 

@@ -10,10 +10,12 @@ from app.core.document_ingest import chunk_pages, extract_text
 from app.core.embedding import model
 from app.core.authorization import (
     AuthorizationDenied,
+    authorize_read,
+    authorize_write,
     get_request_authorization_context,
-    require_bound_request_project_access,
-    require_request_project_write_access,
 )
+from app.core.capabilities import Capability
+from app.core.scopes import GlobalScope, ProjectScope
 
 from app.core.search import (
     create_query_embedding,
@@ -61,11 +63,9 @@ class DocumentChunkCreate(BaseModel):
 @router.post("")
 def create_document(document: DocumentCreate, request: Request):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="write",
-            project_id=document.project_id,
-        )
+        context = get_request_authorization_context(request)
+        scope = ProjectScope(document.project_id) if document.project_id is not None else GlobalScope()
+        authorize_write(context, scope)
 
         if document.status not in {"active", "archived"}:
             raise HTTPException(
@@ -151,13 +151,16 @@ def create_document(document: DocumentCreate, request: Request):
 
 
 @router.get("")
-def list_documents(project_id: int | None = None, request: Request = None):
+def list_documents(request: Request, project_id: int | None = None):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+                raise AuthorizationDenied(
+                    "listing documents without project_id requires PROJECT_READ_ALL or RESOURCE_READ_GLOBAL"
+                )
 
         with get_db_connection() as conn:
             if project_id is not None:
@@ -212,6 +215,11 @@ def list_documents(project_id: int | None = None, request: Request = None):
                     FROM documents d
                     LEFT JOIN document_chunks c
                         ON c.document_id = d.id
+                    WHERE (
+                        (d.project_id = ANY(%s))
+                        OR (%s AND d.project_id IS NOT NULL)
+                        OR (%s AND d.project_id IS NULL)
+                    )
                     GROUP BY
                         d.id,
                         d.project_id,
@@ -224,7 +232,12 @@ def list_documents(project_id: int | None = None, request: Request = None):
                         d.created_at,
                         d.updated_at
                     ORDER BY d.id;
-                    """
+                    """,
+                    (
+                        list(context.read_project_ids),
+                        Capability.PROJECT_READ_ALL in context.capabilities,
+                        context.can_read_global(),
+                    ),
                 ).fetchall()
 
         return {
@@ -247,6 +260,9 @@ def list_documents(project_id: int | None = None, request: Request = None):
             ],
         }
 
+    except HTTPException:
+        raise
+
     except AuthorizationDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -260,17 +276,15 @@ def list_documents(project_id: int | None = None, request: Request = None):
 
 @router.post("/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     project_id: int | None = None,
     title: str | None = Form(default=None),
-    request: Request = None,
 ):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="write",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        scope = ProjectScope(project_id) if project_id is not None else GlobalScope()
+        authorize_write(context, scope)
 
         if not file.filename:
             raise HTTPException(
@@ -455,17 +469,20 @@ async def upload_document(
 
 @router.get("/search")
 def search_documents(
+    request: Request,
     q: str,
     limit: int = 5,
     project_id: int | None = None,
-    request: Request = None,
 ):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities or context.read_project_ids):
+                raise AuthorizationDenied(
+                    "searching documents requires read permission"
+                )
 
         if not q.strip():
             raise HTTPException(
@@ -503,21 +520,41 @@ def search_documents(
         )
 
 
-
 @router.patch("/{document_id}")
-def update_document(document_id: int, document: DocumentUpdate, request: Request = None):
+def update_document(
+    document_id: int,
+    document: DocumentUpdate,
+    request: Request,
+):
     try:
-        if request is not None:
-            require_request_project_write_access(request)
-
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
+        if not (context.write_project_ids or context.can_write_global()):
+            raise AuthorizationDenied(
+                f"identity is not authorized for durable writes: {context.identity}"
+            )
 
         with get_db_connection() as conn:
-            if context is not None:
+            if context.can_write_global():
+                current = conn.execute(
+                    """
+                    SELECT
+                        project_id,
+                        title,
+                        filename,
+                        mime_type,
+                        source,
+                        description,
+                        status
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR project_id IS NULL
+                      );
+                    """,
+                    (document_id, list(context.write_project_ids)),
+                ).fetchone()
+            else:
                 current = conn.execute(
                     """
                     SELECT
@@ -532,23 +569,7 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
                     WHERE id = %s
                       AND project_id = ANY(%s);
                     """,
-                    (document_id, list(context.allowed_project_ids)),
-                ).fetchone()
-            else:
-                current = conn.execute(
-                    """
-                    SELECT
-                        project_id,
-                        title,
-                        filename,
-                        mime_type,
-                        source,
-                        description,
-                        status
-                    FROM documents
-                    WHERE id = %s;
-                    """,
-                    (document_id,),
+                    (document_id, list(context.write_project_ids)),
                 ).fetchone()
 
             if current is None:
@@ -558,11 +579,8 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
                 )
 
             source_project_id = current[0]
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=source_project_id,
-            )
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_write(context, scope)
 
             fields_set = (
                 document.model_fields_set
@@ -570,20 +588,23 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
                 else document.__fields_set__
             )
 
-            if (
-                "project_id" in fields_set
-                and document.project_id is not None
-                and document.project_id != source_project_id
-            ):
-                require_bound_request_project_access(
-                    request,
-                    operation="write",
-                    project_id=document.project_id,
-                )
+            if "project_id" in fields_set and document.project_id != source_project_id:
+                if source_project_id is not None and document.project_id is not None:
+                    raise AuthorizationDenied(
+                        "reassigning resource ownership between projects is not permitted"
+                    )
+
+                if not context.can_write_global():
+                    raise AuthorizationDenied(
+                        "changing global resource ownership requires RESOURCE_WRITE_GLOBAL capability"
+                    )
+
+                if document.project_id is not None:
+                    authorize_write(context, ProjectScope(document.project_id))
 
             project_id = (
                 document.project_id
-                if document.project_id is not None
+                if "project_id" in fields_set
                 else current[0]
             )
 
@@ -709,16 +730,25 @@ def update_document(document_id: int, document: DocumentUpdate, request: Request
 
 
 @router.get("/{document_id}")
-def get_document(document_id: int, request: Request = None):
+def get_document(document_id: int, request: Request):
     try:
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
 
         with get_db_connection() as conn:
-            if context is not None:
+            if Capability.PROJECT_READ_ALL in context.capabilities:
+                row = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id IS NOT NULL
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (document_id, context.can_read_global()),
+                ).fetchone()
+            else:
                 row = conn.execute(
                     """
                     SELECT project_id
@@ -731,18 +761,9 @@ def get_document(document_id: int, request: Request = None):
                     """,
                     (
                         document_id,
-                        list(context.allowed_project_ids),
-                        context.allow_global_read,
+                        list(context.read_project_ids),
+                        context.can_read_global(),
                     ),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """
-                    SELECT project_id
-                    FROM documents
-                    WHERE id = %s;
-                    """,
-                    (document_id,),
                 ).fetchone()
 
             if row is None:
@@ -751,11 +772,9 @@ def get_document(document_id: int, request: Request = None):
                     detail="Document not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="read",
-                project_id=row[0],
-            )
+            source_project_id = row[0]
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_read(context, scope)
 
         result = fetch_document(document_id)
 
@@ -781,19 +800,29 @@ def get_document(document_id: int, request: Request = None):
 
 
 @router.delete("/{document_id}")
-def delete_document(document_id: int, request: Request = None):
+def delete_document(document_id: int, request: Request):
     try:
-        if request is not None:
-            require_request_project_write_access(request)
-
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
+        if not (context.write_project_ids or context.can_write_global()):
+            raise AuthorizationDenied(
+                f"identity is not authorized for durable writes: {context.identity}"
+            )
 
         with get_db_connection() as conn:
-            if context is not None:
+            if context.can_write_global():
+                row = conn.execute(
+                    """
+                    SELECT project_id, title
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR project_id IS NULL
+                      );
+                    """,
+                    (document_id, list(context.write_project_ids)),
+                ).fetchone()
+            else:
                 row = conn.execute(
                     """
                     SELECT project_id, title
@@ -801,16 +830,7 @@ def delete_document(document_id: int, request: Request = None):
                     WHERE id = %s
                       AND project_id = ANY(%s);
                     """,
-                    (document_id, list(context.allowed_project_ids)),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """
-                    SELECT project_id, title
-                    FROM documents
-                    WHERE id = %s;
-                    """,
-                    (document_id,),
+                    (document_id, list(context.write_project_ids)),
                 ).fetchone()
 
             if row is None:
@@ -819,11 +839,9 @@ def delete_document(document_id: int, request: Request = None):
                     detail="Document not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=row[0],
-            )
+            source_project_id = row[0]
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_write(context, scope)
 
             row = conn.execute(
                 """
@@ -862,20 +880,30 @@ def delete_document(document_id: int, request: Request = None):
 def create_document_chunk(
     document_id: int,
     chunk: DocumentChunkCreate,
-    request: Request = None,
+    request: Request,
 ):
     try:
-        if request is not None:
-            require_request_project_write_access(request)
-
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
+        if not (context.write_project_ids or context.can_write_global()):
+            raise AuthorizationDenied(
+                f"identity is not authorized for durable writes: {context.identity}"
+            )
 
         with get_db_connection() as conn:
-            if context is not None:
+            if context.can_write_global():
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR project_id IS NULL
+                      );
+                    """,
+                    (document_id, list(context.write_project_ids)),
+                ).fetchone()
+            else:
                 document = conn.execute(
                     """
                     SELECT id, project_id
@@ -883,16 +911,7 @@ def create_document_chunk(
                     WHERE id = %s
                       AND project_id = ANY(%s);
                     """,
-                    (document_id, list(context.allowed_project_ids)),
-                ).fetchone()
-            else:
-                document = conn.execute(
-                    """
-                    SELECT id, project_id
-                    FROM documents
-                    WHERE id = %s;
-                    """,
-                    (document_id,),
+                    (document_id, list(context.write_project_ids)),
                 ).fetchone()
 
             if document is None:
@@ -901,11 +920,9 @@ def create_document_chunk(
                     detail="Document not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=document[1],
-            )
+            parent_project_id = document[1]
+            scope = ProjectScope(parent_project_id) if parent_project_id is not None else GlobalScope()
+            authorize_write(context, scope)
 
             embedding = Vector(
                 model.encode(
@@ -981,16 +998,25 @@ def create_document_chunk(
 
 
 @router.get("/{document_id}/chunks")
-def list_document_chunks(document_id: int, request: Request = None):
+def list_document_chunks(document_id: int, request: Request):
     try:
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
 
         with get_db_connection() as conn:
-            if context is not None:
+            if Capability.PROJECT_READ_ALL in context.capabilities:
+                document = conn.execute(
+                    """
+                    SELECT id, project_id
+                    FROM documents
+                    WHERE id = %s
+                      AND (
+                          project_id IS NOT NULL
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (document_id, context.can_read_global()),
+                ).fetchone()
+            else:
                 document = conn.execute(
                     """
                     SELECT id, project_id
@@ -1003,18 +1029,9 @@ def list_document_chunks(document_id: int, request: Request = None):
                     """,
                     (
                         document_id,
-                        list(context.allowed_project_ids),
-                        context.allow_global_read,
+                        list(context.read_project_ids),
+                        context.can_read_global(),
                     ),
-                ).fetchone()
-            else:
-                document = conn.execute(
-                    """
-                    SELECT id, project_id
-                    FROM documents
-                    WHERE id = %s;
-                    """,
-                    (document_id,),
                 ).fetchone()
 
             if document is None:
@@ -1023,11 +1040,9 @@ def list_document_chunks(document_id: int, request: Request = None):
                     detail="Document not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="read",
-                project_id=document[1],
-            )
+            parent_project_id = document[1]
+            scope = ProjectScope(parent_project_id) if parent_project_id is not None else GlobalScope()
+            authorize_read(context, scope)
 
             rows = conn.execute(
                 """

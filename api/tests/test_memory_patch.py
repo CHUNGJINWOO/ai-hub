@@ -55,7 +55,7 @@ class MemoryPatchProjectIdTests(unittest.TestCase):
             patch.object(memories.model, "encode", return_value=MagicMock(tolist=lambda: [0.1, 0.2])),
             patch.object(memories, "Vector", side_effect=lambda value: value),
         ):
-            response = memories.update_memory(7, self.make_update(payload))
+            response = memories.update_memory_record(7, self.make_update(payload))
         update_calls = [
             (query, params)
             for query, params in connection.calls
@@ -91,7 +91,7 @@ class MemoryPatchProjectIdTests(unittest.TestCase):
             patch.object(memories, "Vector", side_effect=lambda value: value),
         ):
             with self.assertRaises(HTTPException) as raised:
-                memories.update_memory(7, self.make_update({"project_id": 999}))
+                memories.update_memory_record(7, self.make_update({"project_id": 999}))
 
         self.assertEqual(raised.exception.status_code, 404)
         self.assertFalse(

@@ -105,7 +105,7 @@ class McpContextContractTests(unittest.TestCase):
         self.assertEqual(skill.evidence_type, "ContextItem + ContextSource")
         self.assertEqual(skill.project_scope, "project-scoped")
 
-    def test_rejects_skill_listing_without_global_read_authorization(self):
+    def test_permits_skill_listing_for_project_scoped_caller(self):
         authorization = AuthorizationContext(
             identity="project-agent",
             allowed_project_ids=frozenset({7}),
@@ -113,11 +113,9 @@ class McpContextContractTests(unittest.TestCase):
         )
 
         with mcp_authorization_context(authorization):
-            with self.assertRaisesRegex(
-                PermissionError,
-                "project_id is required",
-            ):
-                list_skills()
+            result = list_skills()
+            self.assertEqual(len(result.skills), 1)
+            self.assertEqual(result.skills[0].skill_id, "ros2-robotics")
 
     def test_rejects_skill_listing_without_authorization_context(self):
         with self.assertRaisesRegex(

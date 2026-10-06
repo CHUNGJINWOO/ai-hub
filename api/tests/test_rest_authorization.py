@@ -648,7 +648,7 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
 
     # Case D: both source and target projects authorized -> success (project moved)
     def test_case_d_both_projects_authorized_moves_project(self):
-        """Case D: Caller authorized for both source (1) and target (2) can move document to target project."""
+        """Case D: Cross-project reassignment (Project 1 -> Project 2) is denied (403)."""
         context = AuthorizationContext(
             identity="admin-p1-p2",
             allowed_project_ids=frozenset({1, 2}),
@@ -661,10 +661,8 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
         ):
             mock_conn = MagicMock()
             mock_db.return_value.__enter__.return_value = mock_conn
-            mock_conn.execute.return_value.fetchone.side_effect = [
-                [1, "Title", "doc.txt", "text/plain", "manual", "desc", "active"],  # current
-                (2,),  # target project 2 exists in DB
-                (1, 2, "Title", "doc.txt", "text/plain", "manual", "desc", "active", "now", "now"),  # RETURNING
+            mock_conn.execute.return_value.fetchone.return_value = [
+                1, "Title", "doc.txt", "text/plain", "manual", "desc", "active"
             ]
             client = self._client_with_context(context)
             with client:
@@ -672,16 +670,9 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
                     "/documents/1",
                     json={"project_id": 2},
                 )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["project_id"], 2)
-        mock_conn.commit.assert_called_once()
-        # Verify the UPDATE query updated project_id to 2
-        update_calls = [
-            call for call in mock_conn.execute.call_args_list
-            if "UPDATE documents" in " ".join(call[0][0].split())
-        ]
-        self.assertEqual(len(update_calls), 1)
-        self.assertEqual(update_calls[0][0][1][0], 2)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("reassigning resource ownership between projects is not permitted", response.json()["detail"])
+        mock_conn.commit.assert_not_called()
 
     # Case D2 (Supplementary): authorized source project + unauthorized target project -> 403
     def test_case_d2_authorized_source_unauthorized_target_denied(self):
@@ -708,7 +699,6 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
                     json={"project_id": 2},
                 )
         self.assertEqual(response.status_code, 403)
-        self.assertIn("not authorized for project: 2", response.json()["detail"])
         mock_conn.commit.assert_not_called()
 
     # Case E: omitted project_id in PATCH body -> preserves existing source project
@@ -743,7 +733,7 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
 
     # Case F: project_id explicitly None/null -> retains existing source project per DocumentUpdate semantics
     def test_case_f_null_project_id_preserves_source_project(self):
-        """Case F: Explicit null project_id falls back to existing project_id per DocumentUpdate semantics."""
+        """Case F: Explicit null project_id without RESOURCE_WRITE_GLOBAL is denied (403)."""
         context = AuthorizationContext(
             identity="user-p1",
             allowed_project_ids=frozenset({1}),
@@ -756,10 +746,8 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
         ):
             mock_conn = MagicMock()
             mock_db.return_value.__enter__.return_value = mock_conn
-            mock_conn.execute.return_value.fetchone.side_effect = [
-                [1, "Title", "doc.txt", "text/plain", "manual", "desc", "active"],  # current
-                (1,),  # project existence check for 1
-                (1, 1, "Updated Title", "doc.txt", "text/plain", "manual", "desc", "active", "now", "now"),  # RETURNING
+            mock_conn.execute.return_value.fetchone.return_value = [
+                1, "Title", "doc.txt", "text/plain", "manual", "desc", "active"  # current
             ]
             client = self._client_with_context(context)
             with client:
@@ -767,9 +755,9 @@ class DocumentPatchAuthorizationTests(unittest.TestCase):
                     "/documents/1",
                     json={"project_id": None, "title": "Updated Title"},
                 )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["project_id"], 1)
-        mock_conn.commit.assert_called_once()
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("RESOURCE_WRITE_GLOBAL", response.json()["detail"])
+        mock_conn.commit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -885,7 +873,7 @@ class MemoryPatchAuthorizationTests(unittest.TestCase):
 
     # Case D: both source and target projects authorized -> success (project moved)
     def test_case_d_both_projects_authorized_moves_project(self):
-        """Case D: Caller authorized for both source (1) and target (2) can move memory to target project."""
+        """Case D: Cross-project reassignment (Project 1 -> Project 2) is denied (403)."""
         context = AuthorizationContext(
             identity="admin-p1-p2",
             allowed_project_ids=frozenset({1, 2}),
@@ -897,30 +885,21 @@ class MemoryPatchAuthorizationTests(unittest.TestCase):
             patch("app.routers.memories.get_db_connection") as mock_db,
             patch.object(memories_router.model, "encode") as mock_encode,
         ):
-            mock_encode.return_value = MagicMock(tolist=lambda: [0.1] * 384)
             mock_conn = MagicMock()
             mock_db.return_value.__enter__.return_value = mock_conn
-            mock_conn.execute.return_value.fetchone.side_effect = [
-                ("Content", "fact", "cat", 3, "api", 1),  # current
-                (2,),  # target project 2 exists in DB
-                (1, "Content", "fact", "cat", 3, "api", "now"),  # RETURNING
-            ]
+            mock_conn.execute.return_value.fetchone.return_value = (
+                "Content", "fact", "cat", 3, "api", 1
+            )
             client = self._client_with_context(context)
             with client:
                 response = client.patch(
                     "/memories/1",
                     json={"project_id": 2},
                 )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "updated")
-        mock_conn.commit.assert_called_once()
-        # Verify the UPDATE query updated project_id to 2
-        update_calls = [
-            call for call in mock_conn.execute.call_args_list
-            if "UPDATE memories" in " ".join(call[0][0].split())
-        ]
-        self.assertEqual(len(update_calls), 1)
-        self.assertEqual(update_calls[0][0][1][5], 2)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("reassigning resource ownership between projects is not permitted", response.json()["detail"])
+        mock_encode.assert_not_called()
+        mock_conn.commit.assert_not_called()
 
     # Case D2 (Supplementary): authorized source project + unauthorized target project -> 403
     def test_case_d2_authorized_source_unauthorized_target_denied(self):
@@ -948,7 +927,6 @@ class MemoryPatchAuthorizationTests(unittest.TestCase):
                     json={"project_id": 2},
                 )
         self.assertEqual(response.status_code, 403)
-        self.assertIn("not authorized for project: 2", response.json()["detail"])
         mock_encode.assert_not_called()
         mock_conn.commit.assert_not_called()
 
@@ -991,7 +969,7 @@ class MemoryPatchAuthorizationTests(unittest.TestCase):
 
     # Case F: project_id explicitly None/null -> unlinks memory (sets project_id to None per MemoryUpdate semantics)
     def test_case_f_null_project_id_unlinks_memory(self):
-        """Case F: Explicit null project_id unlinks memory (sets project_id=None per MemoryUpdate semantics)."""
+        """Case F: Explicit null project_id without RESOURCE_WRITE_GLOBAL is denied (403)."""
         context = AuthorizationContext(
             identity="user-p1",
             allowed_project_ids=frozenset({1}),
@@ -1003,27 +981,21 @@ class MemoryPatchAuthorizationTests(unittest.TestCase):
             patch("app.routers.memories.get_db_connection") as mock_db,
             patch.object(memories_router.model, "encode") as mock_encode,
         ):
-            mock_encode.return_value = MagicMock(tolist=lambda: [0.1] * 384)
             mock_conn = MagicMock()
             mock_db.return_value.__enter__.return_value = mock_conn
-            mock_conn.execute.return_value.fetchone.side_effect = [
-                ("Content", "fact", "cat", 3, "api", 1),  # current
-                (1, "Content", "fact", "cat", 3, "api", "now"),  # RETURNING
-            ]
+            mock_conn.execute.return_value.fetchone.return_value = (
+                "Content", "fact", "cat", 3, "api", 1  # current
+            )
             client = self._client_with_context(context)
             with client:
                 response = client.patch(
                     "/memories/1",
                     json={"project_id": None},
                 )
-        self.assertEqual(response.status_code, 200)
-        update_calls = [
-            call for call in mock_conn.execute.call_args_list
-            if "UPDATE memories" in " ".join(call[0][0].split())
-        ]
-        self.assertEqual(len(update_calls), 1)
-        self.assertIsNone(update_calls[0][0][1][5])
-        mock_conn.commit.assert_called_once()
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("RESOURCE_WRITE_GLOBAL", response.json()["detail"])
+        mock_encode.assert_not_called()
+        mock_conn.commit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

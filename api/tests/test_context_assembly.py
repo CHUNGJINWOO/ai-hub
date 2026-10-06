@@ -391,9 +391,20 @@ class ContextAssemblyTests(unittest.TestCase):
         self.assertEqual(result["documents"], [])
         self.assertEqual(result["sources"], [])
 
+    def _dummy_request(self, project_id: int | None = 2):
+        from app.core.authorization import AuthorizationContext
+        from app.core.capabilities import Capability
+        req = MagicMock()
+        req.state.authorization_context = AuthorizationContext(
+            identity="test",
+            read_project_ids=frozenset({project_id}) if project_id is not None else frozenset(),
+            capabilities=frozenset({Capability.PROJECT_READ_ALL, Capability.RESOURCE_READ_GLOBAL}),
+        )
+        return req
+
     def test_empty_query_route_returns_400(self):
         with self.assertRaises(HTTPException) as raised:
-            context_router.assemble_context(q=" ")
+            context_router.assemble_context(self._dummy_request(), q=" ")
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_assembly_route_returns_normalized_response(self):
@@ -412,6 +423,7 @@ class ContextAssemblyTests(unittest.TestCase):
             return_value=response,
         ) as build_context:
             result = context_router.assemble_context(
+                self._dummy_request(2),
                 q="query",
                 limit=3,
                 project_id=2,
@@ -434,7 +446,7 @@ class ContextAssemblyTests(unittest.TestCase):
             "documents": [{"chunk_id": 31, "document_id": 7}],
         }
         with patch.object(context_router, "unified_search_context", return_value=original_response):
-            response = context_router.search_context(q="cmd_vel publisher", project_id=2)
+            response = context_router.search_context(self._dummy_request(2), q="cmd_vel publisher", project_id=2)
         self.assertEqual(response, original_response)
 
     def test_assembly_route_keeps_legacy_response_shape(self):
@@ -456,6 +468,7 @@ class ContextAssemblyTests(unittest.TestCase):
             return_value=original_response,
         ):
             response = context_router.assemble_context(
+                self._dummy_request(2),
                 q="query",
                 project_id=2,
             )

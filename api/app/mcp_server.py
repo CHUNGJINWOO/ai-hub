@@ -16,6 +16,9 @@ from mcp.server.context import CallNext, HandlerResult, ServerMiddleware
 from mcp.server.context import ServerRequestContext
 from mcp.server.transport_security import TransportSecuritySettings
 
+from app.core.db import get_db_connection
+from app.core.capabilities import Capability
+from app.core.scopes import GlobalScope, ProjectScope
 from app.core.context_assembly import (
     CanonicalContext,
     assemble_canonical_context,
@@ -23,6 +26,8 @@ from app.core.context_assembly import (
 from app.core.authorization import (
     AuthorizationContext,
     AuthorizationDenied,
+    authorize_read,
+    get_mcp_authorization_context,
     mcp_authorization_context,
     require_mcp_project_access,
 )
@@ -369,7 +374,14 @@ def search_context(
     project_id: int | None = None,
 ) -> SearchContextResponse:
     """Search AI-Hub memories and indexed documents together."""
-    require_mcp_project_access(operation="read", project_id=project_id)
+    context = get_mcp_authorization_context()
+    if project_id is not None:
+        authorize_read(context, ProjectScope(project_id))
+    else:
+        if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+            raise AuthorizationDenied(
+                "project_id is required for this authorization request"
+            )
 
     if not query.strip():
         raise ValueError("query must not be empty")
@@ -392,7 +404,14 @@ def get_context(
     project_id: int | None = None,
 ) -> CanonicalContext:
     """Assemble project-scoped canonical context for an AI agent."""
-    require_mcp_project_access(operation="read", project_id=project_id)
+    context = get_mcp_authorization_context()
+    if project_id is not None:
+        authorize_read(context, ProjectScope(project_id))
+    else:
+        if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+            raise AuthorizationDenied(
+                "project_id is required for this authorization request"
+            )
 
     if not query.strip():
         raise ValueError("query must not be empty")
@@ -409,7 +428,7 @@ def get_context(
 @mcp.tool()
 def list_skills() -> ListSkillsResponse:
     """List available skill capability metadata."""
-    require_mcp_project_access(operation="read", project_id=None)
+    get_mcp_authorization_context()
 
     descriptors = list_skill_descriptors()
     return ListSkillsResponse(
@@ -434,16 +453,67 @@ def list_skills() -> ListSkillsResponse:
 @mcp.tool()
 def list_projects() -> ListProjectsResponse:
     """List AI-Hub projects and their memory counts."""
-    require_mcp_project_access(operation="read", project_id=None)
+    context = get_mcp_authorization_context()
 
-    result = fetch_projects()
+    can_read_all = (
+        Capability.PROJECT_READ_ALL in context.capabilities
+        or getattr(context, "allow_global_read", False)
+    )
+    if can_read_all:
+        result = fetch_projects()
+    else:
+        result = fetch_projects(allowed_project_ids=context.read_project_ids)
+
     return ListProjectsResponse.model_validate(result)
 
 
 @mcp.tool()
 def get_document(document_id: int) -> GetDocumentResponse:
     """Get metadata for one AI-Hub document."""
-    require_mcp_project_access(operation="read", project_id=None)
+    context = get_mcp_authorization_context()
+
+    with get_db_connection() as conn:
+        if Capability.PROJECT_READ_ALL in context.capabilities:
+            row = conn.execute(
+                """
+                SELECT project_id
+                FROM documents
+                WHERE id = %s
+                  AND (
+                      project_id IS NOT NULL
+                      OR (%s AND project_id IS NULL)
+                  );
+                """,
+                (document_id, context.can_read_global()),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT project_id
+                FROM documents
+                WHERE id = %s
+                  AND (
+                      project_id = ANY(%s)
+                      OR (%s AND project_id IS NULL)
+                  );
+                """,
+                (
+                    document_id,
+                    list(context.read_project_ids),
+                    context.can_read_global(),
+                ),
+            ).fetchone()
+
+    if row is None:
+        raise ValueError(f"document not found: {document_id}")
+
+    source_project_id = row[0]
+    scope = (
+        ProjectScope(source_project_id)
+        if source_project_id is not None
+        else GlobalScope()
+    )
+    authorize_read(context, scope)
 
     result = fetch_document(document_id)
 

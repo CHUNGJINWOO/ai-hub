@@ -6,10 +6,12 @@ from app.core.db import get_db_connection
 from app.core.embedding import model
 from app.core.authorization import (
     AuthorizationDenied,
+    authorize_read,
+    authorize_write,
     get_request_authorization_context,
-    require_bound_request_project_access,
-    require_request_project_write_access,
 )
+from app.core.capabilities import Capability
+from app.core.scopes import GlobalScope, ProjectScope
 
 
 router = APIRouter(
@@ -36,7 +38,6 @@ class MemoryUpdate(BaseModel):
     project_id: int | None = None
 
 
-
 # -------------------------
 # Create memory
 # -------------------------
@@ -44,11 +45,9 @@ class MemoryUpdate(BaseModel):
 @router.post("")
 def create_memory(memory: MemoryCreate, request: Request):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="write",
-            project_id=memory.project_id,
-        )
+        context = get_request_authorization_context(request)
+        scope = ProjectScope(memory.project_id) if memory.project_id is not None else GlobalScope()
+        authorize_write(context, scope)
 
         embedding = Vector(
             model.encode(
@@ -125,20 +124,23 @@ def create_memory(memory: MemoryCreate, request: Request):
 
 @router.get("")
 def list_memories(
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     project_id: int | None = None,
-    request: Request = None,
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities):
+                raise AuthorizationDenied(
+                    "listing memories without project_id requires PROJECT_READ_ALL or RESOURCE_READ_GLOBAL"
+                )
 
         with get_db_connection() as conn:
             if project_id is not None:
@@ -177,10 +179,21 @@ def list_memories(
                         updated_at,
                         embedding IS NOT NULL AS has_embedding
                     FROM memories
+                    WHERE (
+                        (project_id = ANY(%s))
+                        OR (%s AND project_id IS NOT NULL)
+                        OR (%s AND project_id IS NULL)
+                    )
                     ORDER BY id
                     LIMIT %s OFFSET %s;
                     """,
-                    (limit, offset),
+                    (
+                        list(context.read_project_ids),
+                        Capability.PROJECT_READ_ALL in context.capabilities,
+                        context.can_read_global(),
+                        limit,
+                        offset,
+                    ),
                 ).fetchall()
 
         return {
@@ -202,6 +215,9 @@ def list_memories(
             ],
         }
 
+    except HTTPException:
+        raise
+
     except AuthorizationDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -215,17 +231,20 @@ def list_memories(
 
 @router.get("/search")
 def search_memories(
+    request: Request,
     q: str,
     limit: int = 5,
     project_id: int | None = None,
-    request: Request = None,
 ):
     try:
-        require_bound_request_project_access(
-            request,
-            operation="read",
-            project_id=project_id,
-        )
+        context = get_request_authorization_context(request)
+        if project_id is not None:
+            authorize_read(context, ProjectScope(project_id))
+        else:
+            if not (context.can_read_global() or Capability.PROJECT_READ_ALL in context.capabilities or context.read_project_ids):
+                raise AuthorizationDenied(
+                    "searching memories requires read permission"
+                )
 
         limit = max(1, min(limit, 20))
 
@@ -276,11 +295,19 @@ def search_memories(
                         embedding <=> %s AS distance
                     FROM memories
                     WHERE embedding IS NOT NULL
+                      AND (
+                          (project_id = ANY(%s))
+                          OR (%s AND project_id IS NOT NULL)
+                          OR (%s AND project_id IS NULL)
+                      )
                     ORDER BY embedding <=> %s
                     LIMIT %s;
                     """,
                     (
                         query_embedding,
+                        list(context.read_project_ids),
+                        Capability.PROJECT_READ_ALL in context.capabilities,
+                        context.can_read_global(),
                         query_embedding,
                         limit,
                     ),
@@ -304,24 +331,41 @@ def search_memories(
             ],
         }
 
+    except HTTPException:
+        raise
+
+    except AuthorizationDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # -------------------------
 # Get one memory
 # -------------------------
 
 @router.get("/{memory_id}")
-def get_memory(memory_id: int, request: Request = None):
+def get_memory(memory_id: int, request: Request):
     try:
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
 
         with get_db_connection() as conn:
-            if context is not None:
+            if Capability.PROJECT_READ_ALL in context.capabilities:
+                row = conn.execute(
+                    """
+                    SELECT
+                        project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND (
+                          project_id IS NOT NULL
+                          OR (%s AND project_id IS NULL)
+                      );
+                    """,
+                    (memory_id, context.can_read_global()),
+                ).fetchone()
+            else:
                 row = conn.execute(
                     """
                     SELECT
@@ -335,19 +379,9 @@ def get_memory(memory_id: int, request: Request = None):
                     """,
                     (
                         memory_id,
-                        list(context.allowed_project_ids),
-                        context.allow_global_read,
+                        list(context.read_project_ids),
+                        context.can_read_global(),
                     ),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """
-                    SELECT
-                        project_id
-                    FROM memories
-                    WHERE id = %s;
-                    """,
-                    (memory_id,),
                 ).fetchone()
 
             if row is None:
@@ -356,11 +390,9 @@ def get_memory(memory_id: int, request: Request = None):
                     detail="Memory not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="read",
-                project_id=row[0],
-            )
+            source_project_id = row[0]
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_read(context, scope)
 
             row = conn.execute(
                 """
@@ -411,6 +443,152 @@ def get_memory(memory_id: int, request: Request = None):
 
 
 # -------------------------
+# Update memory record (Internal SQL update helper)
+# -------------------------
+
+def update_memory_record(
+    memory_id: int,
+    memory: MemoryUpdate,
+    current: tuple | None = None,
+) -> dict:
+    """Internal helper to execute the memory database update and commit."""
+    with get_db_connection() as conn:
+        if current is None:
+            current = conn.execute(
+                """
+                SELECT
+                    content,
+                    memory_type,
+                    category,
+                    importance,
+                    source,
+                    project_id
+                FROM memories
+                WHERE id = %s;
+                """,
+                (memory_id,),
+            ).fetchone()
+
+        if current is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Memory not found",
+            )
+
+        fields_set = (
+            memory.model_fields_set
+            if hasattr(memory, "model_fields_set")
+            else memory.__fields_set__
+        )
+
+        content = (
+            memory.content
+            if memory.content is not None
+            else current[0]
+        )
+
+        memory_type = (
+            memory.memory_type
+            if memory.memory_type is not None
+            else current[1]
+        )
+
+        category = (
+            memory.category
+            if memory.category is not None
+            else current[2]
+        )
+
+        importance = (
+            memory.importance
+            if memory.importance is not None
+            else current[3]
+        )
+
+        source = (
+            memory.source
+            if memory.source is not None
+            else current[4]
+        )
+
+        project_id = (
+            memory.project_id
+            if "project_id" in fields_set
+            else current[5]
+        )
+
+        if project_id is not None:
+            project = conn.execute(
+                """
+                SELECT id
+                FROM projects
+                WHERE id = %s;
+                """,
+                (project_id,),
+            ).fetchone()
+
+            if project is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Project not found",
+                )
+
+        embedding = Vector(
+            model.encode(
+                "passage: " + content,
+                normalize_embeddings=True,
+            ).tolist()
+        )
+
+        row = conn.execute(
+            """
+            UPDATE memories
+            SET
+                content = %s,
+                memory_type = %s,
+                category = %s,
+                importance = %s,
+                source = %s,
+                project_id = %s,
+                embedding = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING
+                id,
+                content,
+                memory_type,
+                category,
+                importance,
+                source,
+                updated_at;
+            """,
+            (
+                content,
+                memory_type,
+                category,
+                importance,
+                source,
+                project_id,
+                embedding,
+                memory_id,
+            ),
+        ).fetchone()
+
+        conn.commit()
+
+    return {
+        "status": "updated",
+        "id": row[0],
+        "content": row[1],
+        "memory_type": row[2],
+        "category": row[3],
+        "importance": row[4],
+        "source": row[5],
+        "updated_at": row[6],
+    }
+
+
+# -------------------------
 # Update memory
 # -------------------------
 
@@ -418,20 +596,36 @@ def get_memory(memory_id: int, request: Request = None):
 def update_memory(
     memory_id: int,
     memory: MemoryUpdate,
-    request: Request = None,
+    request: Request,
 ):
     try:
-        if request is not None:
-            require_request_project_write_access(request)
-
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
+        if not (context.write_project_ids or context.can_write_global()):
+            raise AuthorizationDenied(
+                f"identity is not authorized for durable writes: {context.identity}"
+            )
 
         with get_db_connection() as conn:
-            if context is not None:
+            if context.can_write_global():
+                current = conn.execute(
+                    """
+                    SELECT
+                        content,
+                        memory_type,
+                        category,
+                        importance,
+                        source,
+                        project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR project_id IS NULL
+                      );
+                    """,
+                    (memory_id, list(context.write_project_ids)),
+                ).fetchone()
+            else:
                 current = conn.execute(
                     """
                     SELECT
@@ -445,22 +639,7 @@ def update_memory(
                     WHERE id = %s
                       AND project_id = ANY(%s);
                     """,
-                    (memory_id, list(context.allowed_project_ids)),
-                ).fetchone()
-            else:
-                current = conn.execute(
-                    """
-                    SELECT
-                        content,
-                        memory_type,
-                        category,
-                        importance,
-                        source,
-                        project_id
-                    FROM memories
-                    WHERE id = %s;
-                    """,
-                    (memory_id,),
+                    (memory_id, list(context.write_project_ids)),
                 ).fetchone()
 
             if current is None:
@@ -470,11 +649,8 @@ def update_memory(
                 )
 
             source_project_id = current[5]
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=source_project_id,
-            )
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_write(context, scope)
 
             fields_set = (
                 memory.model_fields_set
@@ -482,129 +658,25 @@ def update_memory(
                 else memory.__fields_set__
             )
 
-            if (
-                "project_id" in fields_set
-                and memory.project_id is not None
-                and memory.project_id != source_project_id
-            ):
-                require_bound_request_project_access(
-                    request,
-                    operation="write",
-                    project_id=memory.project_id,
-                )
-
-            content = (
-                memory.content
-                if memory.content is not None
-                else current[0]
-            )
-
-            memory_type = (
-                memory.memory_type
-                if memory.memory_type is not None
-                else current[1]
-            )
-
-            category = (
-                memory.category
-                if memory.category is not None
-                else current[2]
-            )
-
-            importance = (
-                memory.importance
-                if memory.importance is not None
-                else current[3]
-            )
-
-            source = (
-                memory.source
-                if memory.source is not None
-                else current[4]
-            )
-
-            fields_set = (
-                memory.model_fields_set
-                if hasattr(memory, "model_fields_set")
-                else memory.__fields_set__
-            )
-            project_id = (
-                memory.project_id
-                if "project_id" in fields_set
-                else current[5]
-            )
-
-            if project_id is not None:
-                project = conn.execute(
-                    """
-                    SELECT id
-                    FROM projects
-                    WHERE id = %s;
-                    """,
-                    (project_id,),
-                ).fetchone()
-
-                if project is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Project not found",
+            if "project_id" in fields_set and memory.project_id != source_project_id:
+                if source_project_id is not None and memory.project_id is not None:
+                    raise AuthorizationDenied(
+                        "reassigning resource ownership between projects is not permitted"
                     )
 
+                if not context.can_write_global():
+                    raise AuthorizationDenied(
+                        "changing global resource ownership requires RESOURCE_WRITE_GLOBAL capability"
+                    )
 
-            # 내용이 바뀌었을 수도 있으므로 항상 embedding 재생성
-            embedding = Vector(
-                model.encode(
-                    "passage: " + content,
-                    normalize_embeddings=True,
-                ).tolist()
-            )
+                if memory.project_id is not None:
+                    authorize_write(context, ProjectScope(memory.project_id))
 
-            row = conn.execute(
-                """
-                UPDATE memories
-                SET
-                    content = %s,
-                    memory_type = %s,
-                    category = %s,
-                    importance = %s,
-                    source = %s,
-                    project_id = %s,
-                    embedding = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING
-                    id,
-                    content,
-                    memory_type,
-                    category,
-                    importance,
-                    source,
-                    updated_at;
-                """,
-                (
-                    content,
-                    memory_type,
-                    category,
-                    importance,
-                    source,
-                    project_id,
-                    embedding,
-                    memory_id,
-                ),
-            ).fetchone()
-
-            conn.commit()
-
-        return {
-            "status": "updated",
-            "id": row[0],
-            "content": row[1],
-            "memory_type": row[2],
-            "category": row[3],
-            "importance": row[4],
-            "source": row[5],
-            "updated_at": row[6],
-        }
+        return update_memory_record(
+            memory_id=memory_id,
+            memory=memory,
+            current=current,
+        )
 
     except HTTPException:
         raise
@@ -621,19 +693,29 @@ def update_memory(
 # -------------------------
 
 @router.delete("/{memory_id}")
-def delete_memory(memory_id: int, request: Request = None):
+def delete_memory(memory_id: int, request: Request):
     try:
-        if request is not None:
-            require_request_project_write_access(request)
-
-        context = (
-            get_request_authorization_context(request)
-            if request is not None
-            else None
-        )
+        context = get_request_authorization_context(request)
+        if not (context.write_project_ids or context.can_write_global()):
+            raise AuthorizationDenied(
+                f"identity is not authorized for durable writes: {context.identity}"
+            )
 
         with get_db_connection() as conn:
-            if context is not None:
+            if context.can_write_global():
+                project = conn.execute(
+                    """
+                    SELECT project_id
+                    FROM memories
+                    WHERE id = %s
+                      AND (
+                          project_id = ANY(%s)
+                          OR project_id IS NULL
+                      );
+                    """,
+                    (memory_id, list(context.write_project_ids)),
+                ).fetchone()
+            else:
                 project = conn.execute(
                     """
                     SELECT project_id
@@ -641,16 +723,7 @@ def delete_memory(memory_id: int, request: Request = None):
                     WHERE id = %s
                       AND project_id = ANY(%s);
                     """,
-                    (memory_id, list(context.allowed_project_ids)),
-                ).fetchone()
-            else:
-                project = conn.execute(
-                    """
-                    SELECT project_id
-                    FROM memories
-                    WHERE id = %s;
-                    """,
-                    (memory_id,),
+                    (memory_id, list(context.write_project_ids)),
                 ).fetchone()
 
             if project is None:
@@ -659,11 +732,9 @@ def delete_memory(memory_id: int, request: Request = None):
                     detail="Memory not found",
                 )
 
-            require_bound_request_project_access(
-                request,
-                operation="write",
-                project_id=project[0],
-            )
+            source_project_id = project[0]
+            scope = ProjectScope(source_project_id) if source_project_id is not None else GlobalScope()
+            authorize_write(context, scope)
 
             row = conn.execute(
                 """

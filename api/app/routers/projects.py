@@ -3,12 +3,17 @@ from pydantic import BaseModel, Field
 
 from app.core.authorization import (
     AuthorizationDenied,
+    authorize_project_admin,
+    authorize_project_create,
+    authorize_read,
+    authorize_write,
     get_request_authorization_context,
-    require_request_project_read_access,
-    require_request_project_write_access,
 )
+from app.core.capabilities import Capability
+from app.core.scopes import ProjectScope
 from app.core.projects import list_projects as fetch_projects
 from app.core.db import get_db_connection
+import psycopg
 
 
 router = APIRouter(
@@ -32,9 +37,11 @@ class ProjectUpdate(BaseModel):
 
 
 @router.post("")
-def create_project(project: ProjectCreate, request: Request = None):
+def create_project(project: ProjectCreate, request: Request):
     try:
-        require_request_project_write_access(request)
+        context = get_request_authorization_context(request)
+        if not (context.can_create_project() or getattr(context, "_legacy_allow_write", False)):
+            authorize_project_create(context)
 
         if project.status not in {"active", "archived", "completed"}:
             raise HTTPException(
@@ -107,12 +114,16 @@ def create_project(project: ProjectCreate, request: Request = None):
 
 
 @router.get("")
-def list_projects(request: Request = None):
+def list_projects(request: Request):
     try:
         context = get_request_authorization_context(request)
-        if context.allow_global_read:
+        can_read_all = (
+            Capability.PROJECT_READ_ALL in context.capabilities
+            or getattr(context, "allow_global_read", False)
+        )
+        if can_read_all:
             return fetch_projects()
-        return fetch_projects(allowed_project_ids=context.allowed_project_ids)
+        return fetch_projects(allowed_project_ids=context.read_project_ids)
 
     except HTTPException:
         raise
@@ -125,9 +136,11 @@ def list_projects(request: Request = None):
 
 
 @router.get("/{project_id}")
-def get_project(project_id: int, request: Request = None):
+def get_project(project_id: int, request: Request):
     try:
-        require_request_project_read_access(request, project_id=project_id)
+        context = get_request_authorization_context(request)
+        if not getattr(context, "allow_global_read", False):
+            authorize_read(context, ProjectScope(project_id))
 
         with get_db_connection() as conn:
             row = conn.execute(
@@ -188,10 +201,14 @@ def get_project(project_id: int, request: Request = None):
 def update_project(
     project_id: int,
     project: ProjectUpdate,
-    request: Request = None,
+    request: Request,
 ):
     try:
-        require_request_project_write_access(request, project_id=project_id)
+        context = get_request_authorization_context(request)
+        try:
+            authorize_project_admin(context, project_id)
+        except AuthorizationDenied:
+            authorize_write(context, ProjectScope(project_id))
 
         with get_db_connection() as conn:
             current = conn.execute(
@@ -300,19 +317,45 @@ def update_project(
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: int, request: Request = None):
+def delete_project(project_id: int, request: Request):
     try:
-        require_request_project_write_access(request, project_id=project_id)
+        context = get_request_authorization_context(request)
+        try:
+            authorize_project_admin(context, project_id)
+        except AuthorizationDenied:
+            authorize_write(context, ProjectScope(project_id))
 
         with get_db_connection() as conn:
-            row = conn.execute(
+            # Check whether project has owned documents or memories before deletion
+            counts = conn.execute(
                 """
-                DELETE FROM projects
-                WHERE id = %s
-                RETURNING id, name, slug;
+                SELECT
+                    EXISTS(SELECT 1 FROM documents WHERE project_id = %s) AS has_docs,
+                    EXISTS(SELECT 1 FROM memories WHERE project_id = %s) AS has_mems;
                 """,
-                (project_id,),
+                (project_id, project_id),
             ).fetchone()
+
+            if counts and (counts[0] is True or counts[1] is True):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Project cannot be deleted because it contains active documents or memories. Reassign or delete owned resources first.",
+                )
+
+            try:
+                row = conn.execute(
+                    """
+                    DELETE FROM projects
+                    WHERE id = %s
+                    RETURNING id, name, slug;
+                    """,
+                    (project_id,),
+                ).fetchone()
+            except (psycopg.errors.ForeignKeyViolation, psycopg.IntegrityError):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Project cannot be deleted because it contains active documents or memories. Reassign or delete owned resources first.",
+                )
 
             if row is None:
                 raise HTTPException(

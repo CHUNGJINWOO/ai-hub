@@ -15,7 +15,11 @@ from typing import Any
 import jwt
 from jwt import ExpiredSignatureError, PyJWKClient
 
-from app.core.authorization import AuthorizationContext, AuthorizationDenied
+from app.core.authorization import (
+    AuthorizationContext,
+    AuthorizationDenied,
+    claims_to_authorization_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,42 +64,12 @@ def authorization_context_from_claims(
     """Translate a verified principal identity and claims into an
     AuthorizationContext.
 
-    Raises AuthorizationDenied when the token carries no usable principal or
-    when the project-id claim is structurally invalid.
+    Delegates to claims_to_authorization_context so that standard claims
+    (read_project_ids, write_project_ids, capabilities) and legacy claims
+    (allowed_project_ids, allow_write, allow_global_read) are parsed identically
+    across REST and MCP services.
     """
-    if not identity:
-        raise AuthorizationDenied(
-            "authenticated token does not contain a principal"
-        )
-
-    raw_project_ids = claims.get("allowed_project_ids", ())
-    if not isinstance(raw_project_ids, (list, tuple, set, frozenset)):
-        raise AuthorizationDenied(
-            "authenticated token contains invalid project permissions"
-        )
-
-    try:
-        allowed_project_ids = frozenset(
-            int(project_id) for project_id in raw_project_ids
-        )
-    except (TypeError, ValueError) as exc:
-        raise AuthorizationDenied(
-            "authenticated token contains invalid project permissions"
-        ) from exc
-
-    auth_method = claims.get("auth_method")
-    allow_global_read: bool = (
-        auth_method == "static_api_key"
-        or claims.get("allow_global_read") is True
-    )
-    allow_write: bool = claims.get("allow_write") is True
-
-    return AuthorizationContext(
-        identity=str(identity),
-        allowed_project_ids=allowed_project_ids,
-        allow_global_read=allow_global_read,
-        allow_write=allow_write,
-    )
+    return claims_to_authorization_context(identity=identity, claims=claims)
 
 
 # ---------------------------------------------------------------------------
