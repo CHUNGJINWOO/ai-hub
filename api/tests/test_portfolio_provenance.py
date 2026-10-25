@@ -51,10 +51,11 @@ class MockDBConnection:
     """Mock database connection for deterministic testing of queries, advisory locks,
     and duplicate detection logic."""
 
-    def __init__(self, project_exists=True, existing_doc=None, insert_doc_id=101):
+    def __init__(self, project_exists=True, existing_doc=None, insert_doc_id=101, doc_rows=None):
         self.project_exists = project_exists
         self.existing_doc = existing_doc
         self.insert_doc_id = insert_doc_id
+        self.doc_rows = doc_rows if doc_rows is not None else []
         self.executed_queries = []
         self.committed = False
 
@@ -75,6 +76,7 @@ class MockDBConnection:
             mock_cursor.fetchone.return_value = (None,)
         elif "FROM documents d" in clean_q:
             mock_cursor.fetchone.return_value = self.existing_doc
+            mock_cursor.fetchall.return_value = self.doc_rows
         elif "INSERT INTO documents" in clean_q:
             mock_cursor.fetchone.return_value = (self.insert_doc_id,)
         elif "INSERT INTO document_chunks" in clean_q:
@@ -1052,6 +1054,84 @@ class PortfolioProvenanceAndDeduplicationTests(unittest.TestCase):
                 files={"file": ("한글_문서.md", io.BytesIO(b"# Korean Content"), "text/markdown")},
             )
             self.assertEqual(res.status_code, 200, "URL-encoded Korean path failed to match relative_path")
+
+    # -------------------------------------------------------------------------
+    # 31. GET /documents 목록 조회 출처 메타데이터 및 레거시 호환성 검증
+    # -------------------------------------------------------------------------
+    def test_31_list_documents_provenance_and_legacy_metadata(self):
+        client = self._client_with_read_only(project_id=1)
+
+        # Row 1: Document with provenance
+        row_prov = (
+            101, 1, "Provenance Doc", "guide.md", "text/markdown",
+            "https://github.com/CHUNGJINWOO/learning-portfolio/blob/sha/docs/guide.md",
+            '{"relative_path": "docs/guide.md"}', "active",
+            "2026-10-25T00:00:00Z", "2026-10-25T00:00:00Z", 5,
+            "docs/guide.md", "aabbcc112233",
+        )
+        # Row 2: Legacy document without relative_path / sha256
+        row_legacy = (
+            102, 1, "Legacy Doc", "legacy.txt", "text/plain",
+            "upload", None, "active",
+            "2026-10-25T00:00:00Z", "2026-10-25T00:00:00Z", 1,
+            None, None,
+        )
+
+        mock_conn = MockDBConnection(doc_rows=[row_prov, row_legacy])
+
+        with patch("app.routers.documents.get_db_connection", return_value=mock_conn):
+            res = client.get("/documents?project_id=1")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data["count"], 2)
+            docs = data["documents"]
+
+            # Provenance document
+            self.assertEqual(docs[0]["id"], 101)
+            self.assertEqual(docs[0]["relative_path"], "docs/guide.md")
+            self.assertEqual(docs[0]["sha256"], "aabbcc112233")
+            self.assertEqual(docs[0]["chunk_count"], 5)
+
+            # Legacy document (relative_path and sha256 are None, existing fields preserved)
+            self.assertEqual(docs[1]["id"], 102)
+            self.assertIsNone(docs[1]["relative_path"])
+            self.assertIsNone(docs[1]["sha256"])
+            self.assertEqual(docs[1]["filename"], "legacy.txt")
+            self.assertEqual(docs[1]["status"], "active")
+
+    # -------------------------------------------------------------------------
+    # 32. GET /documents (목록)와 GET /documents/{id} (상세) 필드 정합성 검증
+    # -------------------------------------------------------------------------
+    def test_32_list_and_get_document_field_consistency(self):
+        client = self._client_with_read_only(project_id=1)
+
+        row = (
+            201, 1, "Consistent Doc", "consistent.py", "text/x-python",
+            "https://github.com/CHUNGJINWOO/ai-hub/blob/sha/src/consistent.py",
+            None, "active",
+            "2026-10-25T12:00:00Z", "2026-10-25T12:00:00Z", 3,
+            "src/consistent.py", "deadbeef1234",
+        )
+
+        mock_conn = MockDBConnection(doc_rows=[row])
+
+        expected_fields = {
+            "id", "project_id", "title", "filename", "mime_type",
+            "source", "description", "status", "created_at",
+            "updated_at", "chunk_count", "relative_path", "sha256",
+        }
+
+        with patch("app.routers.documents.get_db_connection", return_value=mock_conn):
+            res_list = client.get("/documents?project_id=1")
+            self.assertEqual(res_list.status_code, 200)
+            list_doc = res_list.json()["documents"][0]
+            self.assertEqual(set(list_doc.keys()), expected_fields)
+
+        # Verify unauthorized project access returns 403
+        unauthorized_client = self._client_with_read_only(project_id=999)
+        with patch("app.routers.documents.get_db_connection", return_value=mock_conn):
+            res_unauth = unauthorized_client.get("/documents?project_id=1")
+            self.assertEqual(res_unauth.status_code, 403)
 
 
 if __name__ == "__main__":

@@ -964,6 +964,63 @@ class LivePostgres17IntegrationTests(unittest.TestCase):
         self.assertEqual(doc_info["source"], github_source(rel_path))
         self.assertIn("sha256", doc_info)
 
+    def test_C10_list_documents_provenance_metadata(self):
+        """C10: GET /documents returns relative_path and sha256 for both provenance and legacy docs."""
+        proj_id = self._create_project("List Meta Proj", "list-meta-proj")
+        client = self._client_with_auth(allowed_projects={proj_id})
+
+        # 1. Upload document with provenance
+        rel_path = "src/module.py"
+        content_prov = b"print('provenance')"
+        resp_prov = client.post(
+            f"/documents/upload?project_id={proj_id}",
+            data={
+                "project_id": str(proj_id),
+                "title": "Provenance Doc",
+                "relative_path": rel_path,
+                "source": github_source(rel_path),
+                "commit_sha": TEST_COMMIT_SHA,
+            },
+            files={"file": ("module.py", io.BytesIO(content_prov), "text/x-python")},
+        )
+        self.assertEqual(resp_prov.status_code, 200, resp_prov.text)
+        prov_doc_id = resp_prov.json()["document_id"]
+        prov_sha = resp_prov.json()["sha256"]
+
+        # 2. Upload legacy document without relative_path
+        content_legacy = b"legacy document text"
+        resp_legacy = client.post(
+            f"/documents/upload?project_id={proj_id}",
+            data={"project_id": str(proj_id), "title": "Legacy Doc"},
+            files={"file": ("legacy.txt", io.BytesIO(content_legacy), "text/plain")},
+        )
+        self.assertEqual(resp_legacy.status_code, 200, resp_legacy.text)
+        legacy_doc_id = resp_legacy.json()["document_id"]
+        legacy_sha = resp_legacy.json()["sha256"]
+
+        # 3. Query GET /documents?project_id={proj_id}
+        list_resp = client.get(f"/documents?project_id={proj_id}")
+        self.assertEqual(list_resp.status_code, 200, list_resp.text)
+        data = list_resp.json()
+        self.assertEqual(data["count"], 2)
+        docs_by_id = {d["id"]: d for d in data["documents"]}
+
+        # Check provenance document
+        prov_doc = docs_by_id[prov_doc_id]
+        self.assertEqual(prov_doc["relative_path"], rel_path)
+        self.assertEqual(prov_doc["sha256"], prov_sha)
+
+        # Check legacy document (relative_path defaults to safe_name, sha256 computed)
+        legacy_doc = docs_by_id[legacy_doc_id]
+        self.assertEqual(legacy_doc["relative_path"], "legacy.txt")
+        self.assertEqual(legacy_doc["sha256"], legacy_sha)
+
+        # Check field consistency between detail and list
+        detail_resp = client.get(f"/documents/{prov_doc_id}")
+        self.assertEqual(detail_resp.status_code, 200)
+        detail_doc = detail_resp.json()
+        self.assertEqual(set(prov_doc.keys()), set(detail_doc.keys()))
+
 
 if __name__ == "__main__":
     unittest.main()

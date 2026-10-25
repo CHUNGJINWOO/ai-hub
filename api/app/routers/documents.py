@@ -355,7 +355,9 @@ def list_documents(request: Request, project_id: int | None = None):
                         d.status,
                         d.created_at,
                         d.updated_at,
-                        COUNT(c.id) AS chunk_count
+                        COUNT(c.id) AS chunk_count,
+                        d.relative_path,
+                        d.sha256
                     FROM documents d
                     LEFT JOIN document_chunks c
                         ON c.document_id = d.id
@@ -370,7 +372,9 @@ def list_documents(request: Request, project_id: int | None = None):
                         d.description,
                         d.status,
                         d.created_at,
-                        d.updated_at
+                        d.updated_at,
+                        d.relative_path,
+                        d.sha256
                     ORDER BY d.id;
                     """,
                     (project_id,),
@@ -389,7 +393,9 @@ def list_documents(request: Request, project_id: int | None = None):
                         d.status,
                         d.created_at,
                         d.updated_at,
-                        COUNT(c.id) AS chunk_count
+                        COUNT(c.id) AS chunk_count,
+                        d.relative_path,
+                        d.sha256
                     FROM documents d
                     LEFT JOIN document_chunks c
                         ON c.document_id = d.id
@@ -408,7 +414,9 @@ def list_documents(request: Request, project_id: int | None = None):
                         d.description,
                         d.status,
                         d.created_at,
-                        d.updated_at
+                        d.updated_at,
+                        d.relative_path,
+                        d.sha256
                     ORDER BY d.id;
                     """,
                     (
@@ -433,6 +441,8 @@ def list_documents(request: Request, project_id: int | None = None):
                     "created_at": row[8],
                     "updated_at": row[9],
                     "chunk_count": row[10],
+                    "relative_path": row[11],
+                    "sha256": row[12],
                 }
                 for row in rows
             ],
