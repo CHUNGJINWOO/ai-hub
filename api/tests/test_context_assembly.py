@@ -526,7 +526,7 @@ class ContextAssemblyTests(unittest.TestCase):
         with patch.object(search_core, "get_db_connection", return_value=connection):
             search_core.search_memories(query_embedding="vector", project_id=2)
             memory_query, memory_params = connection.execute.call_args.args
-            self.assertIn("AND project_id = %s", memory_query)
+            self.assertIn("m.project_id = %s", memory_query)
             self.assertEqual(memory_params[1], 2)
 
             connection.execute.reset_mock()
