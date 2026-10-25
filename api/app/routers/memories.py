@@ -260,18 +260,20 @@ def search_memories(
                 rows = conn.execute(
                     """
                     SELECT
-                        id,
-                        content,
-                        memory_type,
-                        category,
-                        importance,
-                        source,
-                        project_id,
-                        embedding <=> %s AS distance
-                    FROM memories
-                    WHERE embedding IS NOT NULL
-                      AND project_id = %s
-                    ORDER BY embedding <=> %s
+                        m.id,
+                        m.content,
+                        m.memory_type,
+                        m.category,
+                        m.importance,
+                        m.source,
+                        m.project_id,
+                        m.embedding <=> %s AS distance
+                    FROM memories m
+                    LEFT JOIN projects p ON p.id = m.project_id
+                    WHERE m.embedding IS NOT NULL
+                      AND m.project_id = %s
+                      AND (p.status IS NULL OR p.status IN ('active', 'completed'))
+                    ORDER BY m.embedding <=> %s
                     LIMIT %s;
                     """,
                     (
@@ -285,22 +287,23 @@ def search_memories(
                 rows = conn.execute(
                     """
                     SELECT
-                        id,
-                        content,
-                        memory_type,
-                        category,
-                        importance,
-                        source,
-                        project_id,
-                        embedding <=> %s AS distance
-                    FROM memories
-                    WHERE embedding IS NOT NULL
+                        m.id,
+                        m.content,
+                        m.memory_type,
+                        m.category,
+                        m.importance,
+                        m.source,
+                        m.project_id,
+                        m.embedding <=> %s AS distance
+                    FROM memories m
+                    LEFT JOIN projects p ON p.id = m.project_id
+                    WHERE m.embedding IS NOT NULL
                       AND (
-                          (project_id = ANY(%s))
-                          OR (%s AND project_id IS NOT NULL)
-                          OR (%s AND project_id IS NULL)
+                          (m.project_id = ANY(%s) AND (p.status IS NULL OR p.status IN ('active', 'completed')))
+                          OR (%s AND m.project_id IS NOT NULL AND (p.status IS NULL OR p.status IN ('active', 'completed')))
+                          OR (%s AND m.project_id IS NULL)
                       )
-                    ORDER BY embedding <=> %s
+                    ORDER BY m.embedding <=> %s
                     LIMIT %s;
                     """,
                     (

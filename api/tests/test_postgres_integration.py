@@ -50,6 +50,20 @@ class ControlledPostgresIntegrationHarness(unittest.TestCase):
             Path(__file__).parents[2] / "migrations" / "0001_baseline.sql"
         ).read_text()
         with cls.connection_factory() as connection:
+            db_info = connection.execute(
+                "SELECT current_database() AS db, inet_server_addr()::text AS host;"
+            ).fetchone()
+            db_name = db_info["db"]
+            host_addr = db_info["host"]
+            if db_name != "phase_n":
+                raise RuntimeError(
+                    f"SAFETY GUARD TRIGGERED: Expected test database 'phase_n', but connected to '{db_name}'!"
+                )
+            if host_addr and host_addr not in ("127.0.0.1", "::1"):
+                raise RuntimeError(
+                    f"SAFETY GUARD TRIGGERED: Refusing to execute DDL against remote host '{host_addr}'!"
+                )
+            connection.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
             connection.execute(migration)
             connection.execute(
                 """

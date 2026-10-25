@@ -16,7 +16,9 @@ def get_document(document_id: int) -> dict | None:
                 d.status,
                 d.created_at,
                 d.updated_at,
-                COUNT(c.id) AS chunk_count
+                COUNT(c.id) AS chunk_count,
+                d.relative_path,
+                d.sha256
             FROM documents d
             LEFT JOIN document_chunks c
                 ON c.document_id = d.id
@@ -31,7 +33,9 @@ def get_document(document_id: int) -> dict | None:
                 d.description,
                 d.status,
                 d.created_at,
-                d.updated_at;
+                d.updated_at,
+                d.relative_path,
+                d.sha256;
             """,
             (document_id,),
         ).fetchone()
@@ -51,4 +55,6 @@ def get_document(document_id: int) -> dict | None:
         "created_at": row[8],
         "updated_at": row[9],
         "chunk_count": row[10],
+        "relative_path": row[11],
+        "sha256": row[12],
     }

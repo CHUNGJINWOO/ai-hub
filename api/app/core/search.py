@@ -120,8 +120,12 @@ def search_documents(
                 FROM document_chunks c
                 JOIN documents d
                     ON d.id = c.document_id
+                LEFT JOIN projects p
+                    ON p.id = d.project_id
                 WHERE c.embedding IS NOT NULL
                   AND d.project_id = %s
+                  AND d.status = 'active'
+                  AND (p.status IS NULL OR p.status IN ('active', 'completed'))
                 ORDER BY c.embedding <=> %s
                 LIMIT %s;
                 """,
@@ -151,7 +155,11 @@ def search_documents(
                 FROM document_chunks c
                 JOIN documents d
                     ON d.id = c.document_id
+                LEFT JOIN projects p
+                    ON p.id = d.project_id
                 WHERE c.embedding IS NOT NULL
+                  AND d.status = 'active'
+                  AND (p.status IN ('active', 'completed') OR d.project_id IS NULL)
                 ORDER BY c.embedding <=> %s
                 LIMIT %s;
                 """,
@@ -261,18 +269,21 @@ def search_memories(
             rows = conn.execute(
                 """
                 SELECT
-                    id,
-                    content,
-                    memory_type,
-                    category,
-                    importance,
-                    source,
-                    project_id,
-                    embedding <=> %s AS distance
-                FROM memories
-                WHERE embedding IS NOT NULL
-                  AND project_id = %s
-                ORDER BY embedding <=> %s
+                    m.id,
+                    m.content,
+                    m.memory_type,
+                    m.category,
+                    m.importance,
+                    m.source,
+                    m.project_id,
+                    m.embedding <=> %s AS distance
+                FROM memories m
+                LEFT JOIN projects p
+                    ON p.id = m.project_id
+                WHERE m.embedding IS NOT NULL
+                  AND m.project_id = %s
+                  AND (p.status IS NULL OR p.status IN ('active', 'completed'))
+                ORDER BY m.embedding <=> %s
                 LIMIT %s;
                 """,
                 (
@@ -286,17 +297,20 @@ def search_memories(
             rows = conn.execute(
                 """
                 SELECT
-                    id,
-                    content,
-                    memory_type,
-                    category,
-                    importance,
-                    source,
-                    project_id,
-                    embedding <=> %s AS distance
-                FROM memories
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s
+                    m.id,
+                    m.content,
+                    m.memory_type,
+                    m.category,
+                    m.importance,
+                    m.source,
+                    m.project_id,
+                    m.embedding <=> %s AS distance
+                FROM memories m
+                LEFT JOIN projects p
+                    ON p.id = m.project_id
+                WHERE m.embedding IS NOT NULL
+                  AND (p.status IN ('active', 'completed') OR m.project_id IS NULL)
+                ORDER BY m.embedding <=> %s
                 LIMIT %s;
                 """,
                 (
