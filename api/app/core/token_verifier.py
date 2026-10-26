@@ -8,6 +8,7 @@ from MCP SDK types.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from typing import Any
@@ -20,6 +21,7 @@ from app.core.authorization import (
     AuthorizationDenied,
     claims_to_authorization_context,
 )
+from app.core.capabilities import Capability
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,65 @@ def authorization_context_from_claims(
 
 
 # ---------------------------------------------------------------------------
+# Static service identity configuration
+# ---------------------------------------------------------------------------
+
+def get_static_key_context() -> AuthorizationContext:
+    """Build AuthorizationContext for the configured static service identity."""
+    identity = os.getenv("AIHUB_STATIC_KEY_IDENTITY", "service:static-api-key")
+    if not identity or not identity.strip():
+        identity = "service:static-api-key"
+
+    raw_read = os.getenv("AIHUB_STATIC_KEY_READ_PROJECTS", "")
+    read_pids: set[int] = set()
+    if raw_read:
+        for val in raw_read.split(","):
+            val = val.strip()
+            if val:
+                try:
+                    read_pids.add(int(val))
+                except (ValueError, TypeError):
+                    pass
+
+    raw_write = os.getenv("AIHUB_STATIC_KEY_WRITE_PROJECTS", "")
+    write_pids: set[int] = set()
+    if raw_write:
+        for val in raw_write.split(","):
+            val = val.strip()
+            if val:
+                try:
+                    write_pids.add(int(val))
+                except (ValueError, TypeError):
+                    pass
+
+    raw_caps = os.getenv("AIHUB_STATIC_KEY_CAPABILITIES", "")
+    caps: set[Capability] = set()
+    if raw_caps:
+        for val in raw_caps.split(","):
+            val = val.strip()
+            if val:
+                try:
+                    caps.add(Capability(val))
+                except (ValueError, KeyError):
+                    pass
+    else:
+        # Default capability when unconfigured: RESOURCE_READ_GLOBAL
+        # (Fail-closed: No PROJECT_READ_ALL, no write permissions)
+        caps.add(Capability.RESOURCE_READ_GLOBAL)
+
+    # Invariant: write_project_ids must be a subset of read_project_ids
+    if not write_pids.issubset(read_pids):
+        read_pids = read_pids | write_pids
+
+    return AuthorizationContext(
+        identity=identity,
+        read_project_ids=frozenset(read_pids),
+        write_project_ids=frozenset(write_pids),
+        capabilities=frozenset(caps),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Token verification: raw token string → AuthorizationContext | None
 # Used by the REST middleware.  Returns None on any verification failure so
 # the middleware can leave request.state unset and let the guard fail-closed.
@@ -80,7 +141,7 @@ def authorization_context_from_claims(
 
 def verify_rest_token(
     raw_token: str,
-    api_key: str | None,
+    api_key: str | None = None,
 ) -> AuthorizationContext | None:
     """Verify *raw_token* against the static API key or the Keycloak JWKS.
 
@@ -93,11 +154,11 @@ def verify_rest_token(
         return None
 
     # --- Static API key path ------------------------------------------
-    if api_key and raw_token == api_key:
-        return authorization_context_from_claims(
-            identity="static-api-key",
-            claims={"auth_method": "static_api_key"},
-        )
+    if api_key and hmac.compare_digest(
+        raw_token.encode("utf-8"),
+        api_key.encode("utf-8"),
+    ):
+        return get_static_key_context()
 
     # --- Keycloak JWT path --------------------------------------------
     if _jwks_client is None:
