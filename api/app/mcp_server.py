@@ -1,3 +1,4 @@
+import hmac
 import os
 from datetime import datetime
 from typing import Any
@@ -31,7 +32,10 @@ from app.core.authorization import (
     mcp_authorization_context,
     require_mcp_project_access,
 )
-from app.core.token_verifier import authorization_context_from_claims
+from app.core.token_verifier import (
+    authorization_context_from_claims,
+    get_static_key_context,
+)
 from app.core.documents import get_document as fetch_document
 from app.core.projects import list_projects as fetch_projects
 from app.core.search import search_context as unified_search_context
@@ -79,19 +83,26 @@ class KeycloakJWTVerifier(TokenVerifier):
         self.jwks_client = PyJWKClient(jwks_url)
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        # Static API-key path.
-        if token == self.api_key:
+        # Static API-key path with constant-time comparison.
+        if self.api_key and hmac.compare_digest(
+            token.encode("utf-8"),
+            self.api_key.encode("utf-8"),
+        ):
+            static_ctx = get_static_key_context()
             return AccessToken(
                 token=token,
-                client_id="static-api-key",
+                client_id=static_ctx.identity,
                 scopes=[REQUIRED_SCOPE],
                 expires_at=None,
                 resource=self.audience,
-                subject="static-api-key",
+                subject=static_ctx.identity,
                 claims={
                     "auth_method": "static_api_key",
                     "scope": REQUIRED_SCOPE,
                     "aud": self.audience,
+                    "read_project_ids": list(static_ctx.read_project_ids),
+                    "write_project_ids": list(static_ctx.write_project_ids),
+                    "capabilities": [c.value for c in static_ctx.capabilities],
                 },
             )
 
