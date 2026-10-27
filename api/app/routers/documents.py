@@ -473,8 +473,27 @@ async def upload_document(
     relative_path: str | None = Form(default=None),
     source: str | None = Form(default=None),
     commit_sha: str | None = Form(default=None),
+    replace_active: bool = False,
+    replace_active_form: bool | None = Form(default=None, alias="replace_active"),
+    expected_current_sha256: str | None = Form(default=None),
 ):
     try:
+        effective_replace_active = replace_active if replace_active_form is None else replace_active_form
+        if effective_replace_active:
+            if not expected_current_sha256 or not expected_current_sha256.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Replacing an active document requires 'expected_current_sha256' to prevent lost updates. Use POST /documents/replace with expected_current_sha256.",
+                )
+            clean_expected_current = expected_current_sha256.strip().lower()
+            if not re.match(r"^[0-9a-fA-F]{64}$", clean_expected_current):
+                raise HTTPException(
+                    status_code=400,
+                    detail="expected_current_sha256 must be a valid 64-character hexadecimal SHA-256 hash",
+                )
+        else:
+            clean_expected_current = None
+
         if project_id is not None and project_id_form is not None and project_id != project_id_form:
             raise HTTPException(
                 status_code=400,
@@ -544,6 +563,7 @@ async def upload_document(
                     detail=f"Uploaded file SHA-256 '{sha256}' does not match expected SHA-256 '{expected_clean}'",
                 )
 
+        # Pre-flight check against DB: verify project exists and fast-path duplicate/conflict
         with get_db_connection() as conn:
             if effective_project_id is not None:
                 project = conn.execute(
@@ -562,15 +582,6 @@ async def upload_document(
                     )
 
             if has_provenance:
-                # Transaction-level PostgreSQL Advisory Lock for serialization
-                # on canonical key (effective_project_id, stored_relative_path)
-                lock_hash = hashlib.sha256(
-                    f"{effective_project_id}:{stored_relative_path}".encode("utf-8")
-                ).hexdigest()[:15]
-                lock_key = int(lock_hash, 16) & 0x7FFFFFFFFFFFFFFF
-                conn.execute("SELECT pg_advisory_xact_lock(%s);", (lock_key,))
-
-                # Query existing active document matching canonical identity key: (project_id, relative_path)
                 if effective_project_id is not None:
                     existing_doc = conn.execute(
                         """
@@ -628,6 +639,12 @@ async def upload_document(
                         (stored_relative_path,),
                     ).fetchone()
 
+                if effective_replace_active and existing_doc is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"No active document found at '{stored_relative_path}' to replace.",
+                    )
+
                 if existing_doc is not None:
                     (
                         existing_id,
@@ -641,6 +658,17 @@ async def upload_document(
                         existing_desc,
                         existing_chunk_count,
                     ) = existing_doc
+
+                    # CAS check: verify expected_current_sha256 matches existing active doc
+                    if effective_replace_active:
+                        if existing_sha256 is None or existing_sha256.lower() != clean_expected_current:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    f"Current active document SHA-256 '{existing_sha256}' does not match "
+                                    f"expected_current_sha256 '{clean_expected_current}' (conflict/lost update)."
+                                ),
+                            )
 
                     # Case A: Same project, same path, same SHA-256 -> Duplicate / Unchanged
                     if existing_sha256 == sha256:
@@ -673,147 +701,283 @@ async def upload_document(
                             "message": "Document already exists with identical content; no changes made",
                         }
 
-                    # Case B: Same project, same path, different SHA-256 -> Conflict / Update required
-                    else:
+                    # Case B: Same project, same path, different SHA-256 -> Conflict if replace_active is False
+                    elif not effective_replace_active:
                         raise HTTPException(
                             status_code=409,
                             detail=(
                                 f"Document already exists at '{stored_relative_path}' with different content "
                                 f"(SHA-256 mismatch: existing {existing_sha256[:8] if existing_sha256 else 'none'}, "
-                                f"incoming {sha256[:8]}). Automatic replacement is disabled."
+                                f"incoming {sha256[:8]}). Automatic replacement is disabled. "
+                                f"Use POST /documents/replace with expected_current_sha256 to update."
                             ),
                         )
 
-            # Not duplicate or conflict (or legacy upload): proceed to write file and ingest
-            upload_root = Path(os.environ.get("DOCUMENTS_UPLOAD_DIR", "/data/documents"))
-            upload_root.mkdir(parents=True, exist_ok=True)
+        # -------------------------------------------------------------------
+        # Phase 2: Heavy I/O, Parsing & Embedding Generation (Outside DB Lock)
+        # -------------------------------------------------------------------
+        upload_root = Path(os.environ.get("DOCUMENTS_UPLOAD_DIR", "/data/documents"))
+        upload_root.mkdir(parents=True, exist_ok=True)
 
-            # Write to a request-unique temporary file to isolate parsing and avoid overwriting/unlinking committed files
-            temp_file_name = f"tmp_{uuid.uuid4().hex}_{safe_name}"
-            temp_path = upload_root / temp_file_name
-            temp_path.write_bytes(raw_bytes)
+        temp_file_name = f"tmp_{uuid.uuid4().hex}_{safe_name}"
+        temp_path = upload_root / temp_file_name
+        temp_path.write_bytes(raw_bytes)
 
-            try:
-                pages = extract_text(
-                    temp_path,
-                    file.content_type,
+        try:
+            pages = extract_text(
+                temp_path,
+                file.content_type,
+            )
+            chunks = chunk_pages(pages)
+            if not chunks:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No extractable text found in the document",
                 )
-                chunks = chunk_pages(pages)
-                if not chunks:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="No extractable text found in the document",
-                    )
 
-                embeddings = []
-                for _, _, content in chunks:
-                    embedding = Vector(
-                        model.encode(
-                            "passage: " + content,
-                            normalize_embeddings=True,
-                        ).tolist()
-                    )
-                    embeddings.append(embedding)
+            embeddings = []
+            for _, _, content in chunks:
+                embedding = Vector(
+                    model.encode(
+                        "passage: " + content,
+                        normalize_embeddings=True,
+                    ).tolist()
+                )
+                embeddings.append(embedding)
 
-                # Promote to final content-addressed immutable path
-                target_name = f"{sha256}_{safe_name}"
-                target_path = upload_root / target_name
-                if target_path.exists():
-                    if target_path.stat().st_size != len(raw_bytes):
-                        temp_path.replace(target_path)
-                    else:
-                        temp_path.unlink(missing_ok=True)
-                else:
+            target_name = f"{sha256}_{safe_name}"
+            target_path = upload_root / target_name
+            if target_path.exists():
+                if target_path.stat().st_size != len(raw_bytes):
                     temp_path.replace(target_path)
-
-                document_title = title or Path(file.filename).stem
-
-                meta_dict = {}
-                if stored_commit_sha:
-                    meta_dict["commit_sha"] = stored_commit_sha
-                    meta_dict["provenance_assertion"] = "client_git_commit"
-                if stored_relative_path != safe_name:
-                    meta_dict["relative_path"] = stored_relative_path
-                if stored_source != "upload":
-                    meta_dict["source"] = stored_source
-                if expected_sha256 is not None:
-                    meta_dict["upload_integrity"] = "client_sha256_match"
                 else:
-                    meta_dict["upload_integrity"] = "unverified_sha256"
-                meta_dict["server_git_verified"] = False
+                    temp_path.unlink(missing_ok=True)
+            else:
+                temp_path.replace(target_path)
 
-                stored_description = json.dumps(meta_dict, ensure_ascii=False) if meta_dict else None
+        except ValueError as e:
+            temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
-                document_row = conn.execute(
-                    """
-                    INSERT INTO documents (
-                        project_id,
-                        title,
-                        filename,
-                        mime_type,
-                        source,
-                        description,
-                        status,
-                        file_path,
-                        file_size,
-                        sha256,
-                        document_type,
-                        relative_path,
-                        file_hash
-                    )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, 'active',
-                        %s, %s, %s, %s, %s, %s
-                    )
-                    RETURNING id;
-                    """,
-                    (
-                        effective_project_id,
-                        document_title,
-                        safe_name,
-                        file.content_type,
-                        stored_source,
-                        stored_description,
-                        str(target_path),
-                        len(raw_bytes),
-                        sha256,
-                        suffix.lstrip("."),
-                        stored_relative_path,
-                        sha256,
-                    ),
-                ).fetchone()
+        # -------------------------------------------------------------------
+        # Phase 3: Short Atomic DB Transaction (Advisory Lock + Version Swap)
+        # -------------------------------------------------------------------
+        with get_db_connection() as conn:
+            if has_provenance:
+                lock_hash = hashlib.sha256(
+                    f"{effective_project_id}:{stored_relative_path}".encode("utf-8")
+                ).hexdigest()[:15]
+                lock_key = int(lock_hash, 16) & 0x7FFFFFFFFFFFFFFF
+                conn.execute("SELECT pg_advisory_xact_lock(%s);", (lock_key,))
 
-                document_id = document_row[0]
-
-                for (chunk_index, page_number, content), embedding in zip(
-                    chunks,
-                    embeddings,
-                ):
-                    conn.execute(
+                # Re-query active document under transaction lock
+                if effective_project_id is not None:
+                    curr_active = conn.execute(
                         """
-                        INSERT INTO document_chunks (
-                            document_id,
-                            chunk_index,
-                            content,
-                            page_number,
-                            embedding
-                        )
-                        VALUES (%s, %s, %s, %s, %s);
+                        SELECT id, sha256, description, file_size
+                        FROM documents
+                        WHERE project_id = %s
+                          AND relative_path = %s
+                          AND status = 'active'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        FOR UPDATE;
                         """,
-                        (
-                            document_id,
-                            chunk_index,
-                            content,
-                            page_number,
-                            embedding,
+                        (effective_project_id, stored_relative_path),
+                    ).fetchone()
+                else:
+                    curr_active = conn.execute(
+                        """
+                        SELECT id, sha256, description, file_size
+                        FROM documents
+                        WHERE project_id IS NULL
+                          AND relative_path = %s
+                          AND status = 'active'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        FOR UPDATE;
+                        """,
+                        (stored_relative_path,),
+                    ).fetchone()
+            else:
+                curr_active = None
+
+            is_replacement = False
+            previous_id = None
+            previous_sha = None
+
+            if effective_replace_active:
+                if curr_active is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"No active document found at '{stored_relative_path}' under lock to replace.",
+                    )
+                curr_id, curr_sha, curr_desc, curr_size = curr_active
+
+                # Re-verify CAS under advisory lock
+                if curr_sha is None or curr_sha.lower() != clean_expected_current:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Active document at '{stored_relative_path}' was modified concurrently "
+                            f"(current SHA-256 is '{curr_sha}', expected '{clean_expected_current}'). "
+                            f"Aborting to prevent lost update."
                         ),
                     )
 
-                conn.commit()
+                if curr_sha == sha256:
+                    return {
+                        "status": "duplicate",
+                        "document_id": curr_id,
+                        "project_id": effective_project_id,
+                        "filename": safe_name,
+                        "relative_path": stored_relative_path,
+                        "source": stored_source,
+                        "file_size": curr_size,
+                        "sha256": curr_sha,
+                        "chunk_count": len(chunks),
+                        "message": "Document already updated to identical content by concurrent request; no changes made",
+                    }
 
+                # Atomically archive the previous active document
+                conn.execute(
+                    """
+                    UPDATE documents
+                    SET status = 'archived',
+                        updated_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (curr_id,),
+                )
+                is_replacement = True
+                previous_id = curr_id
+                previous_sha = curr_sha
+
+            elif curr_active is not None:
+                curr_id, curr_sha, curr_desc, curr_size = curr_active
+
+                if curr_sha == sha256:
+                    return {
+                        "status": "duplicate",
+                        "document_id": curr_id,
+                        "project_id": effective_project_id,
+                        "filename": safe_name,
+                        "relative_path": stored_relative_path,
+                        "source": stored_source,
+                        "file_size": curr_size,
+                        "sha256": curr_sha,
+                        "chunk_count": len(chunks),
+                        "message": "Document already exists with identical content; no changes made",
+                    }
+
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Document already exists at '{stored_relative_path}' with different content "
+                        f"(SHA-256 mismatch: existing {curr_sha[:8] if curr_sha else 'none'}, "
+                        f"incoming {sha256[:8]}). Automatic replacement is disabled. "
+                        f"Use POST /documents/replace with expected_current_sha256 to update."
+                    ),
+                )
+
+            document_title = title or Path(file.filename).stem
+
+            meta_dict = {}
+            if stored_commit_sha:
+                meta_dict["commit_sha"] = stored_commit_sha
+                meta_dict["provenance_assertion"] = "client_git_commit"
+            if stored_relative_path != safe_name:
+                meta_dict["relative_path"] = stored_relative_path
+            if stored_source != "upload":
+                meta_dict["source"] = stored_source
+            if expected_sha256 is not None:
+                meta_dict["upload_integrity"] = "client_sha256_match"
+            else:
+                meta_dict["upload_integrity"] = "unverified_sha256"
+            meta_dict["server_git_verified"] = False
+
+            if is_replacement:
+                meta_dict["supersedes_doc_id"] = previous_id
+                meta_dict["previous_sha256"] = previous_sha
+                meta_dict["version_action"] = "replaced_active"
+
+            stored_description = json.dumps(meta_dict, ensure_ascii=False) if meta_dict else None
+
+            document_row = conn.execute(
+                """
+                INSERT INTO documents (
+                    project_id,
+                    title,
+                    filename,
+                    mime_type,
+                    source,
+                    description,
+                    status,
+                    file_path,
+                    file_size,
+                    sha256,
+                    document_type,
+                    relative_path,
+                    file_hash
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, 'active',
+                    %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id;
+                """,
+                (
+                    effective_project_id,
+                    document_title,
+                    safe_name,
+                    file.content_type,
+                    stored_source,
+                    stored_description,
+                    str(target_path),
+                    len(raw_bytes),
+                    sha256,
+                    suffix.lstrip("."),
+                    stored_relative_path,
+                    sha256,
+                ),
+            ).fetchone()
+
+            document_id = document_row[0]
+
+            for (chunk_index, page_number, content), embedding in zip(
+                chunks,
+                embeddings,
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO document_chunks (
+                        document_id,
+                        chunk_index,
+                        content,
+                        page_number,
+                        embedding
+                    )
+                    VALUES (%s, %s, %s, %s, %s);
+                    """,
+                    (
+                        document_id,
+                        chunk_index,
+                        content,
+                        page_number,
+                        embedding,
+                    ),
+                )
+
+            conn.commit()
+
+            if is_replacement:
                 return {
-                    "status": "created",
+                    "status": "replaced",
                     "document_id": document_id,
+                    "replaced_document_id": previous_id,
                     "project_id": effective_project_id,
                     "filename": safe_name,
                     "relative_path": stored_relative_path,
@@ -824,16 +988,26 @@ async def upload_document(
                     "server_git_verified": False,
                     "file_size": len(raw_bytes),
                     "sha256": sha256,
+                    "previous_sha256": previous_sha,
                     "chunk_count": len(chunks),
+                    "message": f"Document at '{stored_relative_path}' updated: previous ID {previous_id} archived, new ID {document_id} active",
                 }
 
-            except ValueError as e:
-                temp_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail=str(e))
-
-            except Exception:
-                temp_path.unlink(missing_ok=True)
-                raise
+            return {
+                "status": "created",
+                "document_id": document_id,
+                "project_id": effective_project_id,
+                "filename": safe_name,
+                "relative_path": stored_relative_path,
+                "source": stored_source,
+                "commit_sha": stored_commit_sha,
+                "upload_integrity": "client_sha256_match" if expected_sha256 is not None else "unverified_sha256",
+                "provenance_assertion": "client_git_commit" if stored_commit_sha else None,
+                "server_git_verified": False,
+                "file_size": len(raw_bytes),
+                "sha256": sha256,
+                "chunk_count": len(chunks),
+            }
 
     except HTTPException:
         raise
@@ -846,6 +1020,39 @@ async def upload_document(
             status_code=500,
             detail=str(e),
         )
+
+
+@router.post("/replace")
+async def replace_document(
+    request: Request,
+    file: UploadFile = File(...),
+    expected_current_sha256: str = Form(..., description="Required SHA-256 of currently active document to replace (CAS)."),
+    project_id: int | None = None,
+    project_id_form: int | None = Form(default=None, alias="project_id"),
+    expected_sha256: str | None = Form(default=None, description="Optional integrity check for newly uploaded file."),
+    title: str | None = Form(default=None),
+    relative_path: str | None = Form(default=None),
+    source: str | None = Form(default=None),
+    commit_sha: str | None = Form(default=None),
+):
+    """Dedicated endpoint for atomic document version replacement with Compare-and-Swap (CAS).
+
+    Requires 'expected_current_sha256' matching the currently active document's SHA-256.
+    If expected_current_sha256 does not match, returns HTTP 409 Conflict without modifying any data.
+    """
+    return await upload_document(
+        request=request,
+        file=file,
+        project_id=project_id,
+        project_id_form=project_id_form,
+        expected_sha256=expected_sha256,
+        title=title,
+        relative_path=relative_path,
+        source=source,
+        commit_sha=commit_sha,
+        replace_active=True,
+        expected_current_sha256=expected_current_sha256,
+    )
 
 
 @router.get("/search")
